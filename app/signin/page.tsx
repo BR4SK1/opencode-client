@@ -1,4 +1,5 @@
 import { Box, Card, CardContent, Typography } from "@mui/material";
+import { demoMode } from "@/auth";
 import SignInButton from "./SignInButton";
 
 export default function SignInPage() {
@@ -28,7 +29,7 @@ export default function SignInPage() {
           <Typography variant="body2" color="text.secondary">
             Sign in to continue
           </Typography>
-          <SignInButton />
+          <SignInButton demo={demoMode} />
         </CardContent>
       </Card>
     </Box>

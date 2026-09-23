@@ -4,7 +4,7 @@ import { useState } from "react";
 import { signIn } from "next-auth/react";
 import { Alert, Button, CircularProgress, Stack } from "@mui/material";
 
-export default function SignInButton() {
+export default function SignInButton({ demo }: { demo: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
 
@@ -12,7 +12,11 @@ export default function SignInButton() {
     setError(false);
     setLoading(true);
     try {
-      await signIn("oidc", { redirectTo: "/" });
+      if (demo) {
+        await signIn("demo", { redirectTo: "/" });
+      } else {
+        await signIn("oidc", { redirectTo: "/" });
+      }
     } catch {
       setError(true);
     } finally {
@@ -22,7 +26,7 @@ export default function SignInButton() {
 
   return (
     <Stack sx={{ width: "100%", gap: 2 }}>
-      {error && (
+      {error && !demo && (
         <Alert severity="error">
           Sign-in is not configured (missing AUTH_OIDC_* environment variables).
         </Alert>
@@ -34,7 +38,13 @@ export default function SignInButton() {
         disabled={loading}
         onClick={handleClick}
       >
-        {loading ? <CircularProgress size={20} /> : "Sign in"}
+        {loading ? (
+          <CircularProgress size={20} />
+        ) : demo ? (
+          "Enter demo mode"
+        ) : (
+          "Sign in"
+        )}
       </Button>
     </Stack>
   );
