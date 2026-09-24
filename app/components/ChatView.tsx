@@ -77,8 +77,11 @@ function SegmentedText({
     (acc, s, i) => (s.kind === "text" ? i : acc),
     -1,
   );
+  // Keyed because the caret is appended into the renderInline node array passed
+  // to Typography, which requires keys for array children.
   const caretNode = caret ? (
     <Box
+      key="oc-caret"
       component="span"
       sx={{ color: "primary.main", animation: "oc-caret-blink 1s steps(1) infinite" }}
     >

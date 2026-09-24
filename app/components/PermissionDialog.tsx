@@ -76,9 +76,9 @@ export default function PermissionDialog({
         <Typography variant="body1" sx={{ fontWeight: "bold", overflowWrap: "anywhere" }}>
           {permission.action}
         </Typography>
-        {permission.resources.map((r) => (
+        {permission.resources.map((r, ri) => (
           <CodeBlock
-            key={r}
+            key={`${ri}-${r}`}
             code={r}
             lang={/(bash|shell|command|exec)/i.test(permission.action) ? "bash" : undefined}
             maxHeight={200}
