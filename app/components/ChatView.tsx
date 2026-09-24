@@ -273,7 +273,6 @@ export default function ChatView({
               sx={{
                 minWidth: 48,
                 minHeight: 48,
-                color: (t) => t.palette.action.active,
               }}
               onClick={onBack}
             >
@@ -290,7 +289,6 @@ export default function ChatView({
             sx={{
               minWidth: 48,
               minHeight: 48,
-              color: (t) => t.palette.action.active,
             }}
             onClick={onRefresh}
           >
@@ -419,12 +417,12 @@ export default function ChatView({
           sx={{
             minWidth: 48,
             minHeight: 48,
-            "& svg": { color: (t) => t.palette.primary.main },
+            "& svg": { color: "primary.main" },
             "&.Mui-disabled": {
-              bgcolor: (t) => t.palette.action.selected,
+              bgcolor: "action.selected",
               border: "1px solid",
-              borderColor: (t) => t.palette.divider,
-              "& svg": { color: (t) => t.palette.text.disabled },
+              borderColor: "divider",
+              "& svg": { color: "text.disabled" },
             },
           }}
         >

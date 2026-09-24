@@ -122,7 +122,6 @@ export default function SessionList({
               sx={{
                 minWidth: 48,
                 minHeight: 48,
-                color: (t) => t.palette.action.active,
               }}
               onClick={onNew}
             >
@@ -134,7 +133,6 @@ export default function SessionList({
               sx={{
                 minWidth: 48,
                 minHeight: 48,
-                color: (t) => t.palette.action.active,
               }}
               onClick={onLogout}
             >

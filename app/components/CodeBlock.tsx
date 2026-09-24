@@ -193,7 +193,6 @@ export function CodeBlock({ code, lang, maxHeight }: CodeBlockProps) {
           right: 4,
           minWidth: 44,
           minHeight: 44,
-          color: (t) => t.palette.action.active,
         }}
       >
         {copied ? <CheckIcon fontSize="small" /> : <ContentCopyIcon fontSize="small" />}

@@ -33,7 +33,7 @@ export function ThemeToggle() {
       onClick={cycle}
       aria-label={LABELS[effective]}
       title={LABELS[effective]}
-      sx={{ minWidth: 48, minHeight: 48, color: (t) => t.palette.action.active }}
+      sx={{ minWidth: 48, minHeight: 48 }}
     >
       <Icon />
     </IconButton>
