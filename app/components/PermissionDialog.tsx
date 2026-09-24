@@ -72,9 +72,9 @@ export default function PermissionDialog({
         },
       }}
     >
-      <Stack sx={{ p: 2, gap: 1 }}>
+      <Stack sx={{ p: 2, gap: 1, minWidth: 0 }}>
         <Typography variant="h6">Permission requested</Typography>
-        <Typography variant="body1" sx={{ fontWeight: "bold" }}>
+        <Typography variant="body1" sx={{ fontWeight: "bold", overflowWrap: "anywhere" }}>
           {permission.action}
         </Typography>
         {permission.resources.length > 0 && (
@@ -101,7 +101,9 @@ export default function PermissionDialog({
           </Typography>
         )}
         {permission.message && (
-          <Typography variant="body2">{permission.message}</Typography>
+          <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
+            {permission.message}
+          </Typography>
         )}
         {error && (
           <Alert severity="error">Failed to send reply. Try again.</Alert>

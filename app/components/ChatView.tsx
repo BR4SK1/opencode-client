@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import ChevronRight from "@mui/icons-material/ChevronRight";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
 import {
@@ -25,18 +26,45 @@ function toolChipIcon(status: string): string {
   return "•";
 }
 
-function ToolParts({ parts }: { parts: PartVM[] }) {
+function ToolParts({
+  parts,
+  onOpenSession,
+}: {
+  parts: PartVM[];
+  onOpenSession?: (id: string) => void;
+}) {
   const tools = parts.filter((p): p is Extract<PartVM, { kind: "tool" }> => p.kind === "tool");
   if (tools.length === 0) return null;
   return (
     <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
-      {tools.map((t) => (
-        <Chip
-          key={t.id}
-          size="small"
-          label={`${t.name} ${toolChipIcon(t.status)}`}
-        />
-      ))}
+      {tools.map((t) => {
+        const sid = t.subagentSessionID;
+        return sid && onOpenSession ? (
+          <Chip
+            key={t.id}
+            component="button"
+            type="button"
+            size="small"
+            variant="outlined"
+            color="primary"
+            onClick={() => onOpenSession(sid)}
+            aria-label="Open subagent session"
+            label={
+              <>
+                {`${t.name} ${toolChipIcon(t.status)}`}
+                <ChevronRight sx={{ fontSize: 18, verticalAlign: "middle", mr: -0.5 }} />
+              </>
+            }
+            sx={{ minHeight: 44, gap: 0.5 }}
+          />
+        ) : (
+          <Chip
+            key={t.id}
+            size="small"
+            label={`${t.name} ${toolChipIcon(t.status)}`}
+          />
+        );
+      })}
     </Stack>
   );
 }
@@ -52,6 +80,7 @@ interface ChatViewProps {
   onSend: (text: string) => Promise<boolean>;
   onBack?: () => void;
   onRefresh: () => void;
+  onOpenSession?: (id: string) => void;
 }
 
 export default function ChatView({
@@ -65,6 +94,7 @@ export default function ChatView({
   onSend,
   onBack,
   onRefresh,
+  onOpenSession,
 }: ChatViewProps) {
   const [text, setText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -156,6 +186,7 @@ export default function ChatView({
         sx={{
           flex: 1,
           overflowY: "auto",
+          overflowX: "hidden",
           padding: 2,
           display: "flex",
           flexDirection: "column",
@@ -176,7 +207,7 @@ export default function ChatView({
                 borderRadius: 2,
               }}
             >
-              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                 {m.text}
               </Typography>
             </Paper>
@@ -195,11 +226,11 @@ export default function ChatView({
               {m.parts
                 .filter((p) => p.kind === "text")
                 .map((p, i) => (
-                  <Typography key={i} variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+                  <Typography key={i} variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                     {p.text}
                   </Typography>
                 ))}
-              <ToolParts parts={m.parts} />
+              <ToolParts parts={m.parts} onOpenSession={onOpenSession} />
             </Paper>
           ),
         )}
@@ -230,7 +261,7 @@ export default function ChatView({
             }}
           >
             {value ? (
-              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
                 {value}
                 {!endedIds.has(id) && "…"}
               </Typography>

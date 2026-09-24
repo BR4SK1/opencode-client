@@ -26,7 +26,7 @@ export interface SessionVM {
 
 export type PartVM =
   | { kind: "text"; text: string }
-  | { kind: "tool"; id: string; name: string; status: string };
+  | { kind: "tool"; id: string; name: string; status: string; subagentSessionID?: string };
 
 export type MessageVM =
   | { kind: "user"; id: string; text: string }
@@ -50,7 +50,7 @@ interface RawPart {
   text?: unknown;
   id?: unknown;
   name?: unknown;
-  state?: { status?: unknown };
+  state?: { status?: unknown; metadata?: unknown };
 }
 
 interface RawMessage {
@@ -97,11 +97,13 @@ function buildVMs(data: unknown): MessageVM[] {
         if (p.type === "text" && typeof p.text === "string") {
           parts.push({ kind: "text", text: p.text });
         } else if (p.type === "tool") {
+          const metadata = asRecord(asRecord(p.state).metadata);
           parts.push({
             kind: "tool",
             id: str(p.id) || `tool-${parts.length}`,
             name: str(p.name) || "tool",
             status: str(p.state?.status) || "running",
+            subagentSessionID: str(metadata.sessionID) || undefined,
           });
         }
         // reasoning parts are skipped in the MVP
@@ -535,6 +537,7 @@ export default function ChatApp() {
             onSend={sendPrompt}
             onBack={isDesktop ? undefined : () => setActiveId(null)}
             onRefresh={() => void refetchMessages()}
+            onOpenSession={openSession}
           />
         </Box>
       ) : (
