@@ -178,8 +178,27 @@ export default function ChatApp() {
     }
   }, [apiFetch]);
 
+  const resyncPendingPermission = useCallback(async () => {
+    const id = activeIdRef.current;
+    if (!id) return;
+    try {
+      const res = await apiFetch(`/api/sessions/${id}/permissions`);
+      const json = asRecord(await res.json());
+      const pending = Array.isArray(json.pending) ? json.pending : [];
+      if (activeIdRef.current !== id) return;
+      if (pending.length > 0) {
+        setPendingPermission(pending[0] as PendingPermission);
+      } else {
+        if (pendingPermissionRef.current) setPendingPermission(null);
+      }
+    } catch {
+      /* transient — next reconnect or focus retries */
+    }
+  }, [apiFetch]);
+
   const openSession = useCallback(
     async (id: string) => {
+      const sid = id;
       setActiveId(id);
       activeIdRef.current = id;
       setHistory([]);
@@ -201,7 +220,7 @@ export default function ChatApp() {
         const res = await apiFetch(`/api/sessions/${id}/permissions`);
         const json = asRecord(await res.json());
         const pending = Array.isArray(json.pending) ? json.pending : [];
-        if (pending.length > 0) {
+        if (pending.length > 0 && activeIdRef.current === sid) {
           setPendingPermission(pending[0] as PendingPermission);
         }
       } catch {
@@ -353,6 +372,9 @@ export default function ChatApp() {
         case "session.created":
           void refetchSessions();
           break;
+        case "server.connected":
+          void resyncPendingPermission();
+          break;
         default:
           break;
       }
@@ -366,12 +388,19 @@ export default function ChatApp() {
         setConnectionLost(false);
       }
     };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void resyncPendingPermission();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       es.close();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       if (toolTimerRef.current) clearTimeout(toolTimerRef.current);
     };
-  }, [refetchSessions, refetchMessages]);
+  }, [refetchSessions, refetchMessages, resyncPendingPermission]);
 
   const showMobileList = !isDesktop && !activeId;
 
