@@ -1,5 +1,7 @@
 "use client";
 
+import Add from "@mui/icons-material/Add";
+import Logout from "@mui/icons-material/Logout";
 import {
   AppBar,
   Box,
@@ -58,18 +60,26 @@ export default function SessionList({
             <IconButton
               aria-label="New chat"
               size="large"
-              sx={{ minWidth: 48, minHeight: 48 }}
+              sx={{
+                minWidth: 48,
+                minHeight: 48,
+                color: (t) => t.palette.action.active,
+              }}
               onClick={onNew}
             >
-              ＋
+              <Add />
             </IconButton>
             <IconButton
               aria-label="Log out"
               size="large"
-              sx={{ minWidth: 48, minHeight: 48 }}
+              sx={{
+                minWidth: 48,
+                minHeight: 48,
+                color: (t) => t.palette.action.active,
+              }}
               onClick={onLogout}
             >
-              ⎋
+              <Logout />
             </IconButton>
           </Toolbar>
         </AppBar>

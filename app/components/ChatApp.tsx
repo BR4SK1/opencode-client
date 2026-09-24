@@ -52,6 +52,7 @@ interface RawMessage {
   id?: unknown;
   text?: unknown;
   content?: RawPart[];
+  time?: { created?: unknown };
 }
 
 function asRecord(v: unknown): Record<string, unknown> {
@@ -64,8 +65,20 @@ function str(v: unknown): string {
 
 function buildVMs(data: unknown): MessageVM[] {
   const raw = (Array.isArray(data) ? data : []) as RawMessage[];
+  // The API returns messages newest-first (descending by time.created).
+  // Normalize to chronological ascending order (oldest first, newest last):
+  // reverse a copy, then apply a stable sort by time.created. Messages
+  // without a usable timestamp keep their reversed-array position.
+  const chronological = raw
+    .slice()
+    .reverse()
+    .map((m) => ({
+      m,
+      created: Number(m.time?.created) || 0,
+    }))
+    .sort((a, b) => a.created - b.created);
   const out: MessageVM[] = [];
-  raw.forEach((m, i) => {
+  chronological.forEach(({ m }, i) => {
     if (m.type === "user" && typeof m.text === "string") {
       out.push({
         kind: "user",

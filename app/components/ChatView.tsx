@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import ArrowBack from "@mui/icons-material/ArrowBack";
+import Refresh from "@mui/icons-material/Refresh";
+import Send from "@mui/icons-material/Send";
 import {
   AppBar,
   Box,
@@ -69,6 +72,13 @@ export default function ChatView({
 
   const streamingEntries = Array.from(streaming.entries());
 
+  // When a session (re)opens, loading flips to true — treat it as a fresh
+  // open and stick to the bottom, even if ChatView stayed mounted across a
+  // session switch and the user had scrolled up in the previous session.
+  useEffect(() => {
+    if (loading) nearBottomRef.current = true;
+  }, [loading]);
+
   // Autoscroll: only when the user is within 80px of the bottom.
   useEffect(() => {
     const el = scrollRef.current;
@@ -86,6 +96,10 @@ export default function ChatView({
   const handleSend = async () => {
     const trimmed = text.trim();
     if (!trimmed || sending) return;
+    // The user just sent a message — force scroll to the bottom (past the
+    // optimistic bubble and any subsequent streaming) regardless of the
+    // prior scroll position.
+    nearBottomRef.current = true;
     const ok = await onSend(trimmed);
     if (ok) setText("");
   };
@@ -106,10 +120,14 @@ export default function ChatView({
               aria-label="Back to sessions"
               size="large"
               edge="start"
-              sx={{ minWidth: 48, minHeight: 48 }}
+              sx={{
+                minWidth: 48,
+                minHeight: 48,
+                color: (t) => t.palette.action.active,
+              }}
               onClick={onBack}
             >
-              ‹
+              <ArrowBack />
             </IconButton>
           )}
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
@@ -118,10 +136,14 @@ export default function ChatView({
           <IconButton
             aria-label="Refresh messages"
             size="large"
-            sx={{ minWidth: 48, minHeight: 48 }}
+            sx={{
+              minWidth: 48,
+              minHeight: 48,
+              color: (t) => t.palette.action.active,
+            }}
             onClick={onRefresh}
           >
-            ⟳
+            <Refresh />
           </IconButton>
         </Toolbar>
       </AppBar>
@@ -249,12 +271,21 @@ export default function ChatView({
         <IconButton
           aria-label="Send"
           size="large"
-          color="primary"
           disabled={!text.trim() || sending}
           onClick={() => void handleSend()}
-          sx={{ minWidth: 48, minHeight: 48 }}
+          sx={{
+            minWidth: 48,
+            minHeight: 48,
+            "& svg": { color: (t) => t.palette.primary.main },
+            "&.Mui-disabled": {
+              bgcolor: (t) => t.palette.action.selected,
+              border: "1px solid",
+              borderColor: (t) => t.palette.divider,
+              "& svg": { color: (t) => t.palette.text.disabled },
+            },
+          }}
         >
-          {sending ? <CircularProgress size={20} /> : "➤"}
+          {sending ? <CircularProgress size={20} /> : <Send />}
         </IconButton>
       </Paper>
     </Box>
