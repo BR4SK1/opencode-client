@@ -5,6 +5,7 @@ import Logout from "@mui/icons-material/Logout";
 import ExpandMore from "@mui/icons-material/ExpandMore";
 import {
   AppBar,
+  Badge,
   Box,
   Button,
   Collapse,
@@ -33,6 +34,7 @@ function relativeTime(ts: number): string {
 interface SessionListProps {
   variant: "mobile" | "desktop";
   sessions: SessionVM[];
+  pendingCounts: Map<string, number>;
   onOpen: (id: string) => void;
   onNew: () => void;
   onLogout: () => void;
@@ -41,6 +43,7 @@ interface SessionListProps {
 export default function SessionList({
   variant,
   sessions,
+  pendingCounts,
   onOpen,
   onNew,
   onLogout,
@@ -122,6 +125,12 @@ export default function SessionList({
           {roots.map((s) => {
             const children = childrenByParent.get(s.id);
             const expanded = open.has(s.id);
+            const badgeCount =
+              (pendingCounts.get(s.id) ?? 0) +
+              (children ?? []).reduce(
+                (acc, c) => acc + (pendingCounts.get(c.id) ?? 0),
+                0,
+              );
             return (
               <Box key={s.id}>
                 <ListItemButton
@@ -130,9 +139,26 @@ export default function SessionList({
                 >
                   <ListItemText
                     primary={
-                      <Typography variant="body1" noWrap>
-                        {s.title || "Untitled"}
-                      </Typography>
+                      <Box
+                        sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}
+                      >
+                        <Typography variant="body1" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                          {s.title || "Untitled"}
+                        </Typography>
+                        {badgeCount > 0 && (
+                          <Badge
+                            color="warning"
+                            badgeContent={badgeCount}
+                            sx={{
+                              flexShrink: 0,
+                              "& .MuiBadge-badge": {
+                                position: "static",
+                                transform: "none",
+                              },
+                            }}
+                          />
+                        )}
+                      </Box>
                     }
                     secondary={
                       <Typography variant="caption" color="text.secondary">
@@ -176,29 +202,58 @@ export default function SessionList({
                       component="li"
                     >
                       <List disablePadding>
-                        {children.map((c) => (
-                          <ListItemButton
-                            key={c.id}
-                            onClick={() => onOpen(c.id)}
-                            sx={{ minHeight: 44, pl: 5 }}
-                          >
-                            <ListItemText
-                              primary={
-                                <Typography variant="body2" noWrap>
-                                  {c.title || "Untitled"}
-                                </Typography>
-                              }
-                              secondary={
-                                <Typography
-                                  variant="caption"
-                                  color="text.secondary"
-                                >
-                                  {relativeTime(c.updated)}
-                                </Typography>
-                              }
-                            />
-                          </ListItemButton>
-                        ))}
+                        {children.map((c) => {
+                          const childBadgeCount = pendingCounts.get(c.id) ?? 0;
+                          return (
+                            <ListItemButton
+                              key={c.id}
+                              onClick={() => onOpen(c.id)}
+                              sx={{ minHeight: 44, pl: 5 }}
+                            >
+                              <ListItemText
+                                primary={
+                                  <Box
+                                    sx={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 1,
+                                      minWidth: 0,
+                                    }}
+                                  >
+                                    <Typography
+                                      variant="body2"
+                                      noWrap
+                                      sx={{ flex: 1, minWidth: 0 }}
+                                    >
+                                      {c.title || "Untitled"}
+                                    </Typography>
+                                    {childBadgeCount > 0 && (
+                                      <Badge
+                                        color="warning"
+                                        badgeContent={childBadgeCount}
+                                        sx={{
+                                          flexShrink: 0,
+                                          "& .MuiBadge-badge": {
+                                            position: "static",
+                                            transform: "none",
+                                          },
+                                        }}
+                                      />
+                                    )}
+                                  </Box>
+                                }
+                                secondary={
+                                  <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                  >
+                                    {relativeTime(c.updated)}
+                                  </Typography>
+                                }
+                              />
+                            </ListItemButton>
+                          );
+                        })}
                       </List>
                     </Collapse>
                   </>

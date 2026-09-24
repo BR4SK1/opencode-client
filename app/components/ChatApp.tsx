@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Alert,
   Box,
   Button,
+  Snackbar,
   Typography,
   useMediaQuery,
   useTheme,
@@ -38,6 +39,10 @@ export interface PendingPermission {
   save?: string[];
   message?: string;
 }
+
+type OtherPending = { id: string; sessionID: string; action: string; message?: string };
+
+type PermissionToast = { sessionID: string; title: string; count: number; key: number };
 
 /* Raw shapes used only to map history into view models. */
 interface RawPart {
@@ -129,9 +134,14 @@ export default function ChatApp() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
+  const [otherPending, setOtherPending] = useState<OtherPending[]>([]);
+  const [permissionToast, setPermissionToast] = useState<PermissionToast | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
   const pendingPermissionRef = useRef<PendingPermission | null>(null);
+  const sessionsRef = useRef<SessionVM[]>([]);
+  const otherPendingRef = useRef<OtherPending[]>([]);
+  const toastKeyRef = useRef(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -142,6 +152,14 @@ export default function ChatApp() {
   useEffect(() => {
     pendingPermissionRef.current = pendingPermission;
   }, [pendingPermission]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  useEffect(() => {
+    otherPendingRef.current = otherPending;
+  }, [otherPending]);
 
   const apiFetch = useCallback(
     (url: string, init?: RequestInit) => {
@@ -191,6 +209,27 @@ export default function ChatApp() {
       } else {
         if (pendingPermissionRef.current) setPendingPermission(null);
       }
+    } catch {
+      /* transient — next reconnect or focus retries */
+    }
+  }, [apiFetch]);
+
+  const refetchPendingPermissions = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/permissions/pending");
+      const json = asRecord(await res.json());
+      const pending = Array.isArray(json.pending) ? json.pending : [];
+      setOtherPending(
+        pending.map((p) => {
+          const r = asRecord(p);
+          return {
+            id: str(r.id),
+            sessionID: str(r.sessionID),
+            action: str(r.action),
+            message: str(r.message) || undefined,
+          };
+        }),
+      );
     } catch {
       /* transient — next reconnect or focus retries */
     }
@@ -305,13 +344,37 @@ export default function ChatApp() {
                 : undefined,
               message: str(d.message) || undefined,
             });
+          } else {
+            const sid = str(d.sessionID);
+            const pid = str(d.id);
+            const entry: OtherPending = {
+              id: pid,
+              sessionID: sid,
+              action: str(d.action),
+              message: str(d.message) || undefined,
+            };
+            setOtherPending((prev) => [...prev.filter((x) => x.id !== pid), entry]);
+            const s = sessionsRef.current.find((x) => x.id === sid);
+            if (!s) void refetchSessions();
+            const title = s?.title || "Untitled";
+            setPermissionToast((prev) =>
+              prev && prev.sessionID === sid
+                ? { ...prev, count: prev.count + 1, key: ++toastKeyRef.current }
+                : { sessionID: sid, title, count: 1, key: ++toastKeyRef.current },
+            );
           }
           break;
-        case "permission.replied":
+        case "permission.replied": {
           if (pendingPermissionRef.current?.id === str(d.requestID)) {
             setPendingPermission(null);
           }
+          const rid = str(d.requestID);
+          const sid2 = str(d.sessionID);
+          const next = otherPendingRef.current.filter((x) => x.id !== rid);
+          if (next.length !== otherPendingRef.current.length) setOtherPending(next);
+          setPermissionToast((t) => (t && t.sessionID === sid2 ? null : t));
           break;
+        }
         case "session.text.delta":
           if (
             str(d.sessionID) === activeIdRef.current &&
@@ -374,6 +437,8 @@ export default function ChatApp() {
           break;
         case "server.connected":
           void resyncPendingPermission();
+          void refetchPendingPermissions();
+          void refetchSessions();
           break;
         default:
           break;
@@ -391,6 +456,7 @@ export default function ChatApp() {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void resyncPendingPermission();
+        void refetchPendingPermissions();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -400,7 +466,23 @@ export default function ChatApp() {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       if (toolTimerRef.current) clearTimeout(toolTimerRef.current);
     };
-  }, [refetchSessions, refetchMessages, resyncPendingPermission]);
+  }, [refetchSessions, refetchMessages, resyncPendingPermission, refetchPendingPermissions]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void refetchSessions();
+      void refetchPendingPermissions();
+    }, 0);
+    return () => clearTimeout(t);
+  }, [refetchSessions, refetchPendingPermissions]);
+
+  const pendingCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const p of otherPending) {
+      counts.set(p.sessionID, (counts.get(p.sessionID) ?? 0) + 1);
+    }
+    return counts;
+  }, [otherPending]);
 
   const showMobileList = !isDesktop && !activeId;
 
@@ -421,6 +503,7 @@ export default function ChatApp() {
           <SessionList
             variant="desktop"
             sessions={sessions}
+            pendingCounts={pendingCounts}
             onOpen={(id) => void openSession(id)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
@@ -433,6 +516,7 @@ export default function ChatApp() {
           <SessionList
             variant="mobile"
             sessions={sessions}
+            pendingCounts={pendingCounts}
             onOpen={(id) => void openSession(id)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
@@ -474,6 +558,44 @@ export default function ChatApp() {
           onDone={() => setPendingPermission(null)}
         />
       )}
+
+      <Snackbar
+        key={permissionToast?.key ?? 0}
+        open={permissionToast !== null}
+        autoHideDuration={7000}
+        onClose={(_e, reason) => {
+          if (reason !== "clickaway") setPermissionToast(null);
+        }}
+        message={
+          permissionToast
+            ? `Session “${permissionToast.title}” needs approval${permissionToast.count > 1 ? ` (${permissionToast.count} pending)` : ""}`
+            : ""
+        }
+        action={
+          permissionToast && (
+            <Button
+              color="inherit"
+              variant="outlined"
+              size="small"
+              sx={{ height: 40, flexShrink: 0 }}
+              onClick={() => {
+                const sid = permissionToast.sessionID;
+                setPermissionToast(null);
+                void openSession(sid);
+              }}
+            >
+              Open
+            </Button>
+          )
+        }
+        sx={{
+          position: "fixed",
+          bottom: 88,
+          left: 16,
+          right: 16,
+          zIndex: (t) => t.zIndex.snackbar,
+        }}
+      />
 
       {connectionLost && (
         <Alert
