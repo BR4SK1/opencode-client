@@ -17,6 +17,7 @@ import PermissionDialog from "./PermissionDialog";
 
 export interface SessionVM {
   id: string;
+  parentID?: string;
   title: string;
   created: number;
   updated: number;
