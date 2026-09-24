@@ -3,6 +3,7 @@
 import Add from "@mui/icons-material/Add";
 import Logout from "@mui/icons-material/Logout";
 import ExpandMore from "@mui/icons-material/ExpandMore";
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import {
   AppBar,
   Badge,
@@ -13,11 +14,13 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  Stack,
   Toolbar,
   Typography,
 } from "@mui/material";
 import { useMemo, useState } from "react";
 import type { SessionVM } from "./ChatApp";
+import { ThemeToggle } from "./ThemeToggle";
 
 function relativeTime(ts: number): string {
   const millis = ts < 1e12 ? ts * 1000 : ts;
@@ -35,6 +38,7 @@ interface SessionListProps {
   variant: "mobile" | "desktop";
   sessions: SessionVM[];
   pendingCounts: Map<string, number>;
+  activeId?: string;
   onOpen: (id: string) => void;
   onNew: () => void;
   onLogout: () => void;
@@ -44,6 +48,7 @@ export default function SessionList({
   variant,
   sessions,
   pendingCounts,
+  activeId,
   onOpen,
   onNew,
   onLogout,
@@ -86,12 +91,31 @@ export default function SessionList({
         overflow: "hidden",
       }}
     >
+      {variant === "desktop" && (
+        <Box
+          sx={{
+            px: 2,
+            py: 1.5,
+            borderBottom: 1,
+            borderColor: "divider",
+            display: "flex",
+            alignItems: "center",
+          }}
+        >
+          <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
+            opencode-client
+          </Typography>
+          <ThemeToggle />
+        </Box>
+      )}
+
       {variant === "mobile" && (
         <AppBar position="static" color="default" elevation={0}>
           <Toolbar>
             <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
               opencode-client
             </Typography>
+            <ThemeToggle />
             <IconButton
               aria-label="New chat"
               size="large"
@@ -135,6 +159,7 @@ export default function SessionList({
               <Box key={s.id}>
                 <ListItemButton
                   onClick={() => onOpen(s.id)}
+                  selected={s.id === activeId}
                   sx={{ minHeight: 56 }}
                 >
                   <ListItemText
@@ -208,6 +233,7 @@ export default function SessionList({
                             <ListItemButton
                               key={c.id}
                               onClick={() => onOpen(c.id)}
+                              selected={c.id === activeId}
                               sx={{ minHeight: 44, pl: 5 }}
                             >
                               <ListItemText
@@ -262,11 +288,15 @@ export default function SessionList({
             );
           })}
           {sessions.length === 0 && (
-            <Box sx={{ p: 2 }}>
+            <Stack spacing={1} sx={{ py: 6, alignItems: "center" }}>
+              <ForumOutlined sx={{ fontSize: 36, color: "text.disabled" }} />
               <Typography variant="body2" color="text.secondary">
-                No sessions yet.
+                No sessions yet
               </Typography>
-            </Box>
+              <Typography variant="caption" color="text.disabled">
+                Start a new chat to begin
+              </Typography>
+            </Stack>
           )}
         </List>
       </Box>

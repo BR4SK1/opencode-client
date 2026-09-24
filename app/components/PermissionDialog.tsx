@@ -6,12 +6,11 @@ import {
   Button,
   CircularProgress,
   Dialog,
-  List,
-  ListItem,
   Stack,
   Typography,
 } from "@mui/material";
 import type { PendingPermission } from "./ChatApp";
+import { CodeBlock } from "./CodeBlock";
 
 interface PermissionDialogProps {
   permission: PendingPermission;
@@ -72,29 +71,19 @@ export default function PermissionDialog({
         },
       }}
     >
-      <Stack sx={{ p: 2, gap: 1, minWidth: 0 }}>
+      <Stack sx={{ p: 2.5, gap: 1.25, minWidth: 0 }}>
         <Typography variant="h6">Permission requested</Typography>
         <Typography variant="body1" sx={{ fontWeight: "bold", overflowWrap: "anywhere" }}>
           {permission.action}
         </Typography>
-        {permission.resources.length > 0 && (
-          <List disablePadding dense>
-            {permission.resources.map((r) => (
-              <ListItem key={r} disableGutters>
-                <Typography
-                  variant="body2"
-                  component="code"
-                  sx={{
-                    fontFamily: "monospace",
-                    wordBreak: "break-all",
-                  }}
-                >
-                  {r}
-                </Typography>
-              </ListItem>
-            ))}
-          </List>
-        )}
+        {permission.resources.map((r) => (
+          <CodeBlock
+            key={r}
+            code={r}
+            lang={/(bash|shell|command|exec)/i.test(permission.action) ? "bash" : undefined}
+            maxHeight={200}
+          />
+        ))}
         {permission.save && permission.save.length > 0 && (
           <Typography variant="caption" color="text.secondary">
             Allowing always saves rule: {permission.save.join(", ")}
@@ -112,7 +101,12 @@ export default function PermissionDialog({
       <Stack
         direction={{ xs: "column", sm: "row" }}
         spacing={1}
-        sx={{ p: 2, pt: 0 }}
+        sx={{
+          p: 2,
+          pt: 0,
+          display: { xs: "flex", sm: "grid" },
+          gridTemplateColumns: { sm: "repeat(3, minmax(0, 1fr))" },
+        }}
       >
         <Button
           variant="contained"

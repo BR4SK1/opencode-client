@@ -7,10 +7,12 @@ import {
   Box,
   Button,
   Snackbar,
+  Stack,
   Typography,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import { signOut } from "next-auth/react";
 import SessionList from "./SessionList";
 import ChatView from "./ChatView";
@@ -29,8 +31,8 @@ export type PartVM =
   | { kind: "tool"; id: string; name: string; status: string; subagentSessionID?: string };
 
 export type MessageVM =
-  | { kind: "user"; id: string; text: string }
-  | { kind: "assistant"; id: string; parts: PartVM[] };
+  | { kind: "user"; id: string; text: string; time?: number }
+  | { kind: "assistant"; id: string; parts: PartVM[]; time?: number };
 
 export interface PendingPermission {
   id: string;
@@ -84,12 +86,14 @@ function buildVMs(data: unknown): MessageVM[] {
     }))
     .sort((a, b) => a.created - b.created);
   const out: MessageVM[] = [];
-  chronological.forEach(({ m }, i) => {
+  chronological.forEach(({ m, created }, i) => {
+    const time = created || undefined;
     if (m.type === "user" && typeof m.text === "string") {
       out.push({
         kind: "user",
         id: str(m.id) || `user-${i}`,
         text: m.text,
+        time,
       });
     } else if (m.type === "assistant") {
       const parts: PartVM[] = [];
@@ -112,6 +116,7 @@ function buildVMs(data: unknown): MessageVM[] {
         kind: "assistant",
         id: str(m.id) || `assistant-${i}`,
         parts,
+        time,
       });
     }
     // all other message types (idle/system/compaction/agent-selected/...) are skipped
@@ -506,6 +511,7 @@ export default function ChatApp() {
             variant="desktop"
             sessions={sessions}
             pendingCounts={pendingCounts}
+            activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
@@ -519,6 +525,7 @@ export default function ChatApp() {
             variant="mobile"
             sessions={sessions}
             pendingCounts={pendingCounts}
+            activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
@@ -550,7 +557,10 @@ export default function ChatApp() {
             justifyContent: "center",
           }}
         >
-          <Typography color="text.secondary">Select a session</Typography>
+          <Stack spacing={1} sx={{ alignItems: "center" }}>
+            <ForumOutlined sx={{ fontSize: 48, color: "text.disabled" }} />
+            <Typography color="text.secondary">Select a session</Typography>
+          </Stack>
         </Box>
       )}
 
@@ -566,6 +576,9 @@ export default function ChatApp() {
         key={permissionToast?.key ?? 0}
         open={permissionToast !== null}
         autoHideDuration={7000}
+        slotProps={{
+          content: { sx: { borderRadius: 2 } },
+        }}
         onClose={(_e, reason) => {
           if (reason !== "clickaway") setPermissionToast(null);
         }}

@@ -5,8 +5,10 @@ import ArrowBack from "@mui/icons-material/ArrowBack";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
+import SmartToy from "@mui/icons-material/SmartToy";
 import {
   AppBar,
+  Avatar,
   Box,
   Chip,
   CircularProgress,
@@ -19,11 +21,129 @@ import {
   Typography,
 } from "@mui/material";
 import type { MessageVM, PartVM } from "./ChatApp";
+import { ThemeToggle } from "./ThemeToggle";
+import { CodeBlock, InlineCode, parseSegments } from "./CodeBlock";
 
 function toolChipIcon(status: string): string {
   if (status === "completed") return "✓";
   if (status === "error") return "✕";
   return "•";
+}
+
+/** HH:MM in the user's locale; tolerates second- and millisecond-epochs. */
+function formatTime(time: number): string {
+  const ms = time < 1e12 ? time * 1000 : time;
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Renders plain text with **bold** and `inline code` runs. Bold wrapping is
+ * applied first, then inline-code splitting runs within each bold/plain piece,
+ * so `code` inside bold still works. Single `*` is left as literal text. */
+function renderInline(text: string, extra?: React.ReactNode): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  const boldParts = text.split(/(\*\*[^*\n]+\*\*)/g);
+  boldParts.forEach((part, bi) => {
+    const bold = bi % 2 === 1 && /^\*\*[^*\n]+\*\*$/.test(part);
+    const inner = bold ? part.slice(2, -2) : part;
+    const codeParts = inner.split(/`([^`\n]+)`/g);
+    const runs: React.ReactNode[] = codeParts.map((piece, i) =>
+      i % 2 === 1 ? <InlineCode key={`ic-${bi}-${i}`}>{piece}</InlineCode> : piece,
+    );
+    if (bold) {
+      nodes.push(
+        <Box key={`b-${bi}`} component="strong" sx={{ fontWeight: 700 }}>
+          {runs}
+        </Box>,
+      );
+    } else {
+      nodes.push(...runs);
+    }
+  });
+  if (extra !== undefined) nodes.push(extra);
+  return nodes;
+}
+
+function SegmentedText({
+  text,
+  caret,
+}: {
+  text: string;
+  caret?: boolean;
+}) {
+  const segments = parseSegments(text);
+  if (segments.length === 0) return null;
+
+  const lastTextIndex = segments.reduce(
+    (acc, s, i) => (s.kind === "text" ? i : acc),
+    -1,
+  );
+  const caretNode = caret ? (
+    <Box
+      component="span"
+      sx={{ color: "primary.main", animation: "oc-caret-blink 1s steps(1) infinite" }}
+    >
+      ▍
+    </Box>
+  ) : undefined;
+
+  return (
+    <>
+      {segments.map((s, i) => {
+        if (s.kind === "code") {
+          return <CodeBlock key={i} code={s.code} lang={s.lang} />;
+        }
+        return (
+          <Typography
+            key={i}
+            variant="body1"
+            sx={{
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              lineHeight: 1.6,
+            }}
+          >
+            {renderInline(s.text, i === lastTextIndex ? caretNode : undefined)}
+          </Typography>
+        );
+      })}
+      {caret && lastTextIndex === -1 && caretNode}
+    </>
+  );
+}
+
+function AssistantHeader({ time }: { time?: number }) {
+  return (
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+      <Avatar sx={{ width: 24, height: 24, bgcolor: "primary.main" }}>
+        <SmartToy sx={{ fontSize: 14, color: "primary.contrastText" }} />
+      </Avatar>
+      <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600 }}>
+        OpenCode
+      </Typography>
+      {time !== undefined && (
+        <Typography variant="caption" sx={{ color: "text.secondary" }}>
+          {formatTime(time)}
+        </Typography>
+      )}
+    </Stack>
+  );
+}
+
+function AssistantBubble({ children }: { children: React.ReactNode }) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        width: "100%",
+        px: 1.75,
+        py: 1.25,
+        borderRadius: 2.5,
+        borderBottomLeftRadius: 0.75,
+      }}
+    >
+      <Stack spacing={1}>{children}</Stack>
+    </Paper>
+  );
 }
 
 function ToolParts({
@@ -36,7 +156,7 @@ function ToolParts({
   const tools = parts.filter((p): p is Extract<PartVM, { kind: "tool" }> => p.kind === "tool");
   if (tools.length === 0) return null;
   return (
-    <Stack direction="row" spacing={0.5} sx={{ flexWrap: "wrap", gap: 0.5, mt: 0.5 }}>
+    <Stack direction="row" sx={{ flexWrap: "wrap", gap: 0.75 }}>
       {tools.map((t) => {
         const sid = t.subagentSessionID;
         return sid && onOpenSession ? (
@@ -143,7 +263,7 @@ export default function ChatView({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <AppBar position="static" color="default" elevation={0}>
+      <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
         <Toolbar>
           {onBack && (
             <IconButton
@@ -163,6 +283,7 @@ export default function ChatView({
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
+          <ThemeToggle />
           <IconButton
             aria-label="Refresh messages"
             size="large"
@@ -187,91 +308,82 @@ export default function ChatView({
           flex: 1,
           overflowY: "auto",
           overflowX: "hidden",
-          padding: 2,
+          scrollbarWidth: "thin",
+          px: 2,
+          py: 2,
           display: "flex",
           flexDirection: "column",
-          gap: 1,
+          gap: 1.5,
         }}
       >
-        {messages.map((m) =>
-          m.kind === "user" ? (
-            <Paper
-              key={m.id}
-              sx={{
-                alignSelf: "flex-end",
-                maxWidth: "85%",
-                bgcolor: "primary.main",
-                color: "primary.contrastText",
-                px: 1.5,
-                py: 1,
-                borderRadius: 2,
-              }}
-            >
-              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {m.text}
-              </Typography>
-            </Paper>
-          ) : (
-            <Paper
-              key={m.id}
-              variant="outlined"
-              sx={{
-                alignSelf: "flex-start",
-                maxWidth: "85%",
-                px: 1.5,
-                py: 1,
-                borderRadius: 2,
-              }}
-            >
-              {m.parts
-                .filter((p) => p.kind === "text")
-                .map((p, i) => (
-                  <Typography key={i} variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                    {p.text}
+        <Box sx={{ width: "100%", maxWidth: 760, mx: "auto", display: "flex", flexDirection: "column", gap: 1.5 }}>
+          {messages.map((m) =>
+            m.kind === "user" ? (
+              <Stack key={m.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
+                <Paper
+                  sx={{
+                    maxWidth: "85%",
+                    bgcolor: "primary.main",
+                    color: "primary.contrastText",
+                    px: 1.75,
+                    py: 1.25,
+                    borderRadius: 2.5,
+                    borderBottomRightRadius: 0.75,
+                  }}
+                >
+                  <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                    {m.text}
                   </Typography>
-                ))}
-              <ToolParts parts={m.parts} onOpenSession={onOpenSession} />
-            </Paper>
-          ),
-        )}
-
-        {toolRunningCount > 0 && (
-          <Stack
-            direction="row"
-            spacing={1}
-            sx={{ alignSelf: "flex-start", width: 180, alignItems: "center" }}
-          >
-            <LinearProgress sx={{ flex: 1 }} />
-            <Typography variant="caption" color="text.secondary" noWrap>
-              Tool running…
-            </Typography>
-          </Stack>
-        )}
-
-        {streamingEntries.map(([id, value]) => (
-          <Paper
-            key={`streaming-${id}`}
-            variant="outlined"
-            sx={{
-              alignSelf: "flex-start",
-              maxWidth: "85%",
-              px: 1.5,
-              py: 1,
-              borderRadius: 2,
-            }}
-          >
-            {value ? (
-              <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                {value}
-                {!endedIds.has(id) && "…"}
-              </Typography>
+                </Paper>
+                {m.time !== undefined && (
+                  <Typography variant="caption" sx={{ color: "text.secondary", fontSize: 11 }}>
+                    {formatTime(m.time)}
+                  </Typography>
+                )}
+              </Stack>
             ) : (
-              <Typography variant="body1" color="text.secondary">
-                ···
+              <Stack key={m.id} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
+                <AssistantHeader time={m.time} />
+                <AssistantBubble>
+                  {m.parts
+                    .filter((p) => p.kind === "text")
+                    .map((p, i) => (
+                      <SegmentedText key={i} text={p.text} />
+                    ))}
+                  <ToolParts parts={m.parts} onOpenSession={onOpenSession} />
+                </AssistantBubble>
+              </Stack>
+            ),
+          )}
+
+          {toolRunningCount > 0 && (
+            <Stack
+              direction="row"
+              spacing={1}
+              sx={{ alignItems: "center" }}
+            >
+              <LinearProgress sx={{ width: 160 }} />
+              <Typography variant="caption" color="text.secondary" noWrap>
+                Tool running…
               </Typography>
-            )}
-          </Paper>
-        ))}
+            </Stack>
+          )}
+
+          {streamingEntries.map(([id, value]) => (
+            <Stack key={`streaming-${id}`} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
+              <AssistantHeader />
+              <AssistantBubble>
+                {value ? (
+                  <SegmentedText text={value} caret={!endedIds.has(id)} />
+                ) : (
+                  <Typography variant="body1" color="text.secondary">
+                    ···
+                  </Typography>
+                )}
+              </AssistantBubble>
+            </Stack>
+          ))}
+        </Box>
       </Box>
 
       <Paper
