@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      AUTH_SECRET: ci-only-secret-for-build-checks
+      AUTH_OIDC_ISSUER: https://issuer.example.invalid
+      AUTH_OIDC_ID: ci-only
+      AUTH_OIDC_SECRET: ci-only
+      OPENCODE_BASE_URL: http://127.0.0.1:4096
+      AUTH_DEMO: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
