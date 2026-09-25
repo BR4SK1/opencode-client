@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Refresh from "@mui/icons-material/Refresh";
@@ -10,6 +10,7 @@ import {
   AppBar,
   Avatar,
   Box,
+  Button,
   Chip,
   CircularProgress,
   IconButton,
@@ -195,12 +196,13 @@ function ToolParts({
 interface ChatViewProps {
   title: string;
   messages: MessageVM[];
-  streaming: Map<string, string>;
-  endedIds: Set<string>;
   toolRunningCount: number;
   loading: boolean;
+  hasOlderMessages: boolean;
+  loadingOlderMessages: boolean;
   sending: boolean;
   onSend: (text: string) => Promise<boolean>;
+  onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
   onRefresh: () => void;
   onOpenSession?: (id: string) => void;
@@ -209,12 +211,13 @@ interface ChatViewProps {
 export default function ChatView({
   title,
   messages,
-  streaming,
-  endedIds,
   toolRunningCount,
   loading,
+  hasOlderMessages,
+  loadingOlderMessages,
   sending,
   onSend,
+  onLoadOlder,
   onBack,
   onRefresh,
   onOpenSession,
@@ -222,23 +225,41 @@ export default function ChatView({
   const [text, setText] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
-
-  const streamingEntries = Array.from(streaming.entries());
+  const scrollAnchorRef = useRef<{
+    height: number;
+    top: number;
+    messageCount: number;
+  } | null>(null);
 
   // When a session (re)opens, loading flips to true — treat it as a fresh
   // open and stick to the bottom, even if ChatView stayed mounted across a
   // session switch and the user had scrolled up in the previous session.
   useEffect(() => {
-    if (loading) nearBottomRef.current = true;
+    if (loading) {
+      nearBottomRef.current = true;
+      scrollAnchorRef.current = null;
+    }
   }, [loading]);
 
-  // Autoscroll: only when the user is within 80px of the bottom.
-  useEffect(() => {
+  // Preserve the current viewport when an older page is prepended. Otherwise,
+  // autoscroll only when the user is already within 80px of the bottom.
+  useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && nearBottomRef.current) {
+    if (!el) return;
+
+    const anchor = scrollAnchorRef.current;
+    if (anchor && messages.length > anchor.messageCount) {
+      el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+      scrollAnchorRef.current = null;
+      nearBottomRef.current =
+        el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      return;
+    }
+    if (anchor && !loadingOlderMessages) scrollAnchorRef.current = null;
+    if (!loadingOlderMessages && nearBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [messages, streamingEntries, toolRunningCount]);
+  }, [messages, toolRunningCount, loadingOlderMessages]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -255,6 +276,18 @@ export default function ChatView({
     nearBottomRef.current = true;
     const ok = await onSend(trimmed);
     if (ok) setText("");
+  };
+
+  const handleLoadOlder = async () => {
+    const el = scrollRef.current;
+    if (!el || loadingOlderMessages) return;
+    scrollAnchorRef.current = {
+      height: el.scrollHeight,
+      top: el.scrollTop,
+      messageCount: messages.length,
+    };
+    const loaded = await onLoadOlder();
+    if (!loaded) scrollAnchorRef.current = null;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -318,6 +351,19 @@ export default function ChatView({
         }}
       >
         <Box sx={{ width: "100%", maxWidth: 760, mx: "auto", display: "flex", flexDirection: "column", gap: 1.5 }}>
+          {hasOlderMessages && (
+            <Button
+              size="small"
+              disabled={loadingOlderMessages}
+              onClick={() => void handleLoadOlder()}
+              sx={{ alignSelf: "center", minHeight: 40 }}
+            >
+              {loadingOlderMessages ? (
+                <CircularProgress size={18} sx={{ mr: 1 }} />
+              ) : null}
+              Load older messages
+            </Button>
+          )}
           {messages.map((m) =>
             m.kind === "user" ? (
               <Stack key={m.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
@@ -347,10 +393,19 @@ export default function ChatView({
                 <AssistantHeader time={m.time} />
                 <AssistantBubble>
                   {m.parts
-                    .filter((p) => p.kind === "text")
-                    .map((p, i) => (
-                      <SegmentedText key={i} text={p.text} />
+                    .filter((p): p is Extract<PartVM, { kind: "text" }> => p.kind === "text")
+                    .map((p, i, textParts) => (
+                      <SegmentedText
+                        key={i}
+                        text={p.text}
+                        caret={m.streaming && i === textParts.length - 1}
+                      />
                     ))}
+                  {m.streaming && !m.parts.some((p) => p.kind === "text") && (
+                    <Typography variant="body1" color="text.secondary">
+                      ···
+                    </Typography>
+                  )}
                   <ToolParts parts={m.parts} onOpenSession={onOpenSession} />
                 </AssistantBubble>
               </Stack>
@@ -370,20 +425,6 @@ export default function ChatView({
             </Stack>
           )}
 
-          {streamingEntries.map(([id, value]) => (
-            <Stack key={`streaming-${id}`} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
-              <AssistantHeader />
-              <AssistantBubble>
-                {value ? (
-                  <SegmentedText text={value} caret={!endedIds.has(id)} />
-                ) : (
-                  <Typography variant="body1" color="text.secondary">
-                    ···
-                  </Typography>
-                )}
-              </AssistantBubble>
-            </Stack>
-          ))}
         </Box>
       </Box>
 

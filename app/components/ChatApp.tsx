@@ -31,8 +31,26 @@ export type PartVM =
   | { kind: "tool"; id: string; name: string; status: string; subagentSessionID?: string };
 
 export type MessageVM =
-  | { kind: "user"; id: string; text: string; time?: number }
-  | { kind: "assistant"; id: string; parts: PartVM[]; time?: number };
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      time?: number;
+      clientMessageID?: string;
+    }
+  | {
+      kind: "assistant";
+      id: string;
+      parts: PartVM[];
+      time?: number;
+      streaming?: boolean;
+    };
+
+interface StreamingVM {
+  text: string;
+  time: number;
+  ended: boolean;
+}
 
 export interface PendingPermission {
   id: string;
@@ -59,6 +77,7 @@ interface RawMessage {
   type: string;
   id?: unknown;
   text?: unknown;
+  metadata?: unknown;
   content?: RawPart[];
   time?: { created?: unknown };
 }
@@ -69,6 +88,37 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+function sortVMs(messages: MessageVM[]): MessageVM[] {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort(
+      (a, b) =>
+        (a.message.time ?? 0) - (b.message.time ?? 0) || a.index - b.index,
+    )
+    .map(({ message }) => message);
+}
+
+function mergeVMs(existing: MessageVM[], incoming: MessageVM[]): MessageVM[] {
+  const byID = new Map(existing.map((message) => [message.id, message]));
+
+  for (const message of incoming) {
+    if (message.kind === "user" && message.clientMessageID) {
+      for (const [id, current] of byID) {
+        if (
+          current.kind === "user" &&
+          current.clientMessageID === message.clientMessageID &&
+          id !== message.id
+        ) {
+          byID.delete(id);
+        }
+      }
+    }
+    byID.set(message.id, message);
+  }
+
+  return sortVMs(Array.from(byID.values()));
 }
 
 function buildVMs(data: unknown): MessageVM[] {
@@ -89,11 +139,13 @@ function buildVMs(data: unknown): MessageVM[] {
   chronological.forEach(({ m, created }, i) => {
     const time = created || undefined;
     if (m.type === "user" && typeof m.text === "string") {
+      const metadata = asRecord(m.metadata);
       out.push({
         kind: "user",
         id: str(m.id) || `user-${i}`,
         text: m.text,
         time,
+        clientMessageID: str(metadata.opencodeClientMessageID) || undefined,
       });
     } else if (m.type === "assistant") {
       const parts: PartVM[] = [];
@@ -121,7 +173,39 @@ function buildVMs(data: unknown): MessageVM[] {
     }
     // all other message types (idle/system/compaction/agent-selected/...) are skipped
   });
-  return out;
+  return sortVMs(out);
+}
+
+function withStreamingMessages(
+  history: MessageVM[],
+  streaming: Map<string, StreamingVM>,
+): MessageVM[] {
+  const byID = new Map(history.map((message) => [message.id, message]));
+
+  for (const [id, live] of streaming) {
+    const current = byID.get(id);
+    if (current?.kind === "assistant") {
+      byID.set(id, {
+        ...current,
+        parts: [
+          ...current.parts.filter((part) => part.kind !== "text"),
+          ...(live.text ? [{ kind: "text" as const, text: live.text }] : []),
+        ],
+        time: current.time ?? live.time,
+        streaming: !live.ended,
+      });
+    } else if (!current) {
+      byID.set(id, {
+        kind: "assistant",
+        id,
+        parts: live.text ? [{ kind: "text", text: live.text }] : [],
+        time: live.time,
+        streaming: !live.ended,
+      });
+    }
+  }
+
+  return sortVMs(Array.from(byID.values()));
 }
 
 export default function ChatApp() {
@@ -132,8 +216,9 @@ export default function ChatApp() {
   const [sessions, setSessions] = useState<SessionVM[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [history, setHistory] = useState<MessageVM[]>([]);
-  const [streaming, setStreaming] = useState<Map<string, string>>(new Map());
-  const [endedIds, setEndedIds] = useState<Set<string>>(new Set());
+  const [streaming, setStreaming] = useState<Map<string, StreamingVM>>(new Map());
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [toolRunningCount, setToolRunningCount] = useState(0);
   const [pendingPermission, setPendingPermission] =
     useState<PendingPermission | null>(null);
@@ -145,6 +230,11 @@ export default function ChatApp() {
   const [permissionToast, setPermissionToast] = useState<PermissionToast | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
+  const sessionGenerationRef = useRef(0);
+  const headRequestRef = useRef(0);
+  const olderCursorRef = useRef<string | null>(null);
+  const olderPageLoadedRef = useRef(false);
+  const loadingOlderGenerationRef = useRef<number | null>(null);
   const pendingPermissionRef = useRef<PendingPermission | null>(null);
   const sessionsRef = useRef<SessionVM[]>([]);
   const otherPendingRef = useRef<OtherPending[]>([]);
@@ -191,17 +281,115 @@ export default function ChatApp() {
     }
   }, [apiFetch]);
 
+  const setMessageCursor = useCallback((cursor: string | null) => {
+    olderCursorRef.current = cursor;
+    setOlderCursor(cursor);
+  }, []);
+
+  const fetchMessagePage = useCallback(
+    async (id: string, cursor?: string) => {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+      const res = await apiFetch(
+        `/api/sessions/${encodeURIComponent(id)}/messages${query}`,
+      );
+      if (!res.ok) throw new Error(`message fetch failed: ${res.status}`);
+      const json = asRecord(await res.json());
+      const rawMessages = Array.isArray(json.messages) ? json.messages : [];
+      return {
+        messages: buildVMs(rawMessages),
+        rawCount: rawMessages.length,
+        nextCursor: str(json.nextCursor) || null,
+      };
+    },
+    [apiFetch],
+  );
+
   const refetchMessages = useCallback(async () => {
     const id = activeIdRef.current;
-    if (!id) return;
+    if (!id) return false;
+    const generation = sessionGenerationRef.current;
+    const request = ++headRequestRef.current;
     try {
-      const res = await apiFetch(`/api/sessions/${id}/messages`);
-      const json = asRecord(await res.json());
-      setHistory(buildVMs(json.messages));
+      const page = await fetchMessagePage(id);
+      if (
+        activeIdRef.current !== id ||
+        sessionGenerationRef.current !== generation ||
+        headRequestRef.current !== request
+      ) {
+        return false;
+      }
+      setHistory((previous) => mergeVMs(previous, page.messages));
+      if (
+        olderCursorRef.current === null &&
+        !olderPageLoadedRef.current &&
+        page.nextCursor
+      ) {
+        setMessageCursor(page.nextCursor);
+      }
+      const syncedAssistantIDs = new Set(
+        page.messages
+          .filter((message) => message.kind === "assistant")
+          .map((message) => message.id),
+      );
+      setStreaming((previous) => {
+        const next = new Map(previous);
+        for (const [messageID, message] of next) {
+          if (message.ended && syncedAssistantIDs.has(messageID)) {
+            next.delete(messageID);
+          }
+        }
+        return next;
+      });
+      setLoadingMessages(false);
+      return true;
     } catch {
       /* unauthorized already routed to /signin */
+      if (
+        activeIdRef.current === id &&
+        sessionGenerationRef.current === generation &&
+        headRequestRef.current === request
+      ) {
+        setLoadingMessages(false);
+      }
+      return false;
     }
-  }, [apiFetch]);
+  }, [fetchMessagePage, setMessageCursor]);
+
+  const loadOlderMessages = useCallback(async () => {
+    const id = activeIdRef.current;
+    const cursor = olderCursorRef.current;
+    const generation = sessionGenerationRef.current;
+    if (!id || !cursor || loadingOlderGenerationRef.current === generation) {
+      return false;
+    }
+
+    loadingOlderGenerationRef.current = generation;
+    setLoadingOlderMessages(true);
+    try {
+      const page = await fetchMessagePage(id, cursor);
+      if (
+        activeIdRef.current !== id ||
+        sessionGenerationRef.current !== generation ||
+        olderCursorRef.current !== cursor
+      ) {
+        return false;
+      }
+      setHistory((previous) => mergeVMs(previous, page.messages));
+      olderPageLoadedRef.current = true;
+      setMessageCursor(page.nextCursor);
+      return page.rawCount > 0;
+    } catch {
+      /* transient — keep the current page available */
+      return false;
+    } finally {
+      if (loadingOlderGenerationRef.current === generation) {
+        loadingOlderGenerationRef.current = null;
+      }
+      if (sessionGenerationRef.current === generation) {
+        setLoadingOlderMessages(false);
+      }
+    }
+  }, [fetchMessagePage, setMessageCursor]);
 
   const resyncPendingPermission = useCallback(async () => {
     const id = activeIdRef.current;
@@ -245,35 +433,57 @@ export default function ChatApp() {
   const openSession = useCallback(
     async (id: string) => {
       const sid = id;
+      const generation = ++sessionGenerationRef.current;
+      const request = ++headRequestRef.current;
       setActiveId(id);
       activeIdRef.current = id;
       setHistory([]);
       setStreaming(new Map());
-      setEndedIds(new Set());
+      olderPageLoadedRef.current = false;
+      setMessageCursor(null);
+      setLoadingOlderMessages(false);
+      setSending(false);
       setToolRunningCount(0);
       setPendingPermission(null);
       setLoadingMessages(true);
       try {
-        const res = await apiFetch(`/api/sessions/${id}/messages`);
-        const json = asRecord(await res.json());
-        setHistory(buildVMs(json.messages));
+        const page = await fetchMessagePage(id);
+        if (
+          activeIdRef.current !== sid ||
+          sessionGenerationRef.current !== generation ||
+          headRequestRef.current !== request
+        ) {
+          return;
+        }
+        setHistory((previous) => mergeVMs(previous, page.messages));
+        setMessageCursor(page.nextCursor);
       } catch {
         /* unauthorized already routed to /signin */
       } finally {
-        setLoadingMessages(false);
+        if (
+          activeIdRef.current === sid &&
+          sessionGenerationRef.current === generation &&
+          headRequestRef.current === request
+        ) {
+          setLoadingMessages(false);
+        }
       }
       try {
         const res = await apiFetch(`/api/sessions/${id}/permissions`);
         const json = asRecord(await res.json());
         const pending = Array.isArray(json.pending) ? json.pending : [];
-        if (pending.length > 0 && activeIdRef.current === sid) {
+        if (
+          pending.length > 0 &&
+          activeIdRef.current === sid &&
+          sessionGenerationRef.current === generation
+        ) {
           setPendingPermission(pending[0] as PendingPermission);
         }
       } catch {
         /* unauthorized already routed to /signin */
       }
     },
-    [apiFetch],
+    [apiFetch, fetchMessagePage, setMessageCursor],
   );
 
   const newChat = useCallback(async () => {
@@ -300,25 +510,53 @@ export default function ChatApp() {
     async (text: string): Promise<boolean> => {
       const id = activeIdRef.current;
       if (!id || !text.trim()) return false;
-      const tmpId = `tmp-${Date.now()}`;
-      setHistory((h) => [...h, { kind: "user", id: tmpId, text }]);
+      const generation = sessionGenerationRef.current;
+      const clientMessageID = `tmp-${crypto.randomUUID()}`;
+      setHistory((previous) =>
+        sortVMs([
+          ...previous,
+          {
+            kind: "user",
+            id: clientMessageID,
+            clientMessageID,
+            text,
+            time: Date.now(),
+          },
+        ]),
+      );
       setSending(true);
       try {
         const res = await apiFetch(`/api/sessions/${id}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify({ text, clientMessageID }),
         });
         if (!res.ok) throw new Error(`prompt failed: ${res.status}`);
         return true;
       } catch (err) {
-        setHistory((h) => h.filter((m) => m.id !== tmpId));
-        if ((err as Error).message !== "unauthorized") {
+        if (
+          activeIdRef.current === id &&
+          sessionGenerationRef.current === generation
+        ) {
+          setHistory((previous) =>
+            previous.filter((message) => message.id !== clientMessageID),
+          );
+        }
+        if (
+          (err as Error).message !== "unauthorized" &&
+          activeIdRef.current === id &&
+          sessionGenerationRef.current === generation
+        ) {
           setError("Failed to send message.");
         }
         return false;
       } finally {
-        setSending(false);
+        if (
+          activeIdRef.current === id &&
+          sessionGenerationRef.current === generation
+        ) {
+          setSending(false);
+        }
       }
     },
     [apiFetch],
@@ -337,6 +575,7 @@ export default function ChatApp() {
       const rec = asRecord(parsed);
       const type = str(rec.type);
       const d = asRecord(rec.data);
+      const eventTime = Number(rec.created) || Date.now();
       switch (type) {
         case "permission.asked":
           if (str(d.sessionID) === activeIdRef.current) {
@@ -382,20 +621,37 @@ export default function ChatApp() {
           setPermissionToast((t) => (t && t.sessionID === sid2 ? null : t));
           break;
         }
+        case "session.text.started":
+          if (str(d.sessionID) === activeIdRef.current) {
+            const mid = str(d.assistantMessageID);
+            if (!mid) break;
+            setStreaming((previous) => {
+              const next = new Map(previous);
+              const current = next.get(mid);
+              next.set(mid, {
+                text: current?.text ?? "",
+                time: current?.time ?? eventTime,
+                ended: false,
+              });
+              return next;
+            });
+          }
+          break;
         case "session.text.delta":
           if (
             str(d.sessionID) === activeIdRef.current &&
             typeof d.delta === "string"
           ) {
             const mid = str(d.assistantMessageID);
+            if (!mid) break;
             setStreaming((prev) => {
               const next = new Map(prev);
-              next.set(mid, (next.get(mid) ?? "") + d.delta);
-              return next;
-            });
-            setEndedIds((prev) => {
-              const next = new Set(prev);
-              next.delete(mid);
+              const current = next.get(mid);
+              next.set(mid, {
+                text: (current?.text ?? "") + d.delta,
+                time: current?.time ?? eventTime,
+                ended: false,
+              });
               return next;
             });
           }
@@ -406,13 +662,18 @@ export default function ChatApp() {
             typeof d.text === "string"
           ) {
             const mid = str(d.assistantMessageID);
+            if (!mid) break;
             const finalText = d.text;
             setStreaming((prev) => {
               const next = new Map(prev);
-              next.set(mid, finalText);
+              const current = next.get(mid);
+              next.set(mid, {
+                text: finalText,
+                time: current?.time ?? eventTime,
+                ended: true,
+              });
               return next;
             });
-            setEndedIds((prev) => new Set(prev).add(mid));
           }
           break;
         case "session.idle":
@@ -420,8 +681,6 @@ export default function ChatApp() {
             if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
             idleTimerRef.current = setTimeout(() => {
               void refetchMessages();
-              setStreaming(new Map());
-              setEndedIds(new Set());
               setToolRunningCount(0);
             }, 400);
           }
@@ -446,6 +705,7 @@ export default function ChatApp() {
           void resyncPendingPermission();
           void refetchPendingPermissions();
           void refetchSessions();
+          void refetchMessages();
           break;
         default:
           break;
@@ -464,6 +724,7 @@ export default function ChatApp() {
       if (document.visibilityState === "visible") {
         void resyncPendingPermission();
         void refetchPendingPermissions();
+        void refetchMessages();
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
@@ -490,6 +751,11 @@ export default function ChatApp() {
     }
     return counts;
   }, [otherPending]);
+
+  const displayMessages = useMemo(
+    () => withStreamingMessages(history, streaming),
+    [history, streaming],
+  );
 
   const showMobileList = !isDesktop && !activeId;
 
@@ -535,15 +801,25 @@ export default function ChatApp() {
         <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <ChatView
             title={sessions.find((s) => s.id === activeId)?.title || "Untitled"}
-            messages={history}
-            streaming={streaming}
-            endedIds={endedIds}
+            messages={displayMessages}
             toolRunningCount={toolRunningCount}
             loading={loadingMessages}
+            hasOlderMessages={olderCursor !== null}
+            loadingOlderMessages={loadingOlderMessages}
             sending={sending}
             onSend={sendPrompt}
-            onBack={isDesktop ? undefined : () => setActiveId(null)}
+            onBack={
+              isDesktop
+                ? undefined
+                : () => {
+                    ++sessionGenerationRef.current;
+                    ++headRequestRef.current;
+                    activeIdRef.current = null;
+                    setActiveId(null);
+                  }
+            }
             onRefresh={() => void refetchMessages()}
+            onLoadOlder={loadOlderMessages}
             onOpenSession={openSession}
           />
         </Box>

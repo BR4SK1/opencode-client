@@ -11,6 +11,14 @@ export async function GET(
   if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const res = await opencode.message.list({ sessionID: id });
-  return Response.json({ messages: res.data });
+  const cursor = new URL(request.url).searchParams.get("cursor") || undefined;
+  const res = await opencode.message.list({
+    sessionID: id,
+    limit: 50,
+    ...(cursor ? { cursor } : { order: "desc" }),
+  });
+  return Response.json({
+    messages: res.data,
+    nextCursor: res.cursor.next ?? null,
+  });
 }
