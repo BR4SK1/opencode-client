@@ -13,10 +13,12 @@ import {
   useTheme,
 } from "@mui/material";
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
+import type { FormInfo, ModelRef } from "@opencode/client";
 import { signOut } from "next-auth/react";
 import SessionList from "./SessionList";
 import ChatView from "./ChatView";
 import PermissionDialog from "./PermissionDialog";
+import FormDialog from "./FormDialog";
 
 export interface SessionVM {
   id: string;
@@ -24,6 +26,15 @@ export interface SessionVM {
   title: string;
   created: number;
   updated: number;
+  agent: string;
+  model?: ModelRef;
+}
+
+interface AgentOptionVM {
+  id: string;
+  name: string;
+  description: string;
+  model?: ModelRef | null;
 }
 
 export type PartVM =
@@ -42,8 +53,16 @@ export type MessageVM =
       kind: "assistant";
       id: string;
       parts: PartVM[];
+      agent?: string;
       time?: number;
       streaming?: boolean;
+    }
+  | {
+      kind: "agent";
+      id: string;
+      agent: string;
+      previous?: string;
+      time?: number;
     };
 
 interface StreamingVM {
@@ -79,6 +98,8 @@ interface RawMessage {
   text?: unknown;
   metadata?: unknown;
   content?: RawPart[];
+  agent?: unknown;
+  previous?: unknown;
   time?: { created?: unknown };
 }
 
@@ -88,6 +109,15 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+function modelRef(v: unknown): ModelRef | undefined {
+  const record = asRecord(v);
+  const id = str(record.id);
+  const providerID = str(record.providerID);
+  if (!id || !providerID) return undefined;
+  const variant = str(record.variant);
+  return { id, providerID, ...(variant ? { variant } : {}) };
 }
 
 function sortVMs(messages: MessageVM[]): MessageVM[] {
@@ -147,6 +177,14 @@ function buildVMs(data: unknown): MessageVM[] {
         time,
         clientMessageID: str(metadata.opencodeClientMessageID) || undefined,
       });
+    } else if (m.type === "agent-switched") {
+      out.push({
+        kind: "agent",
+        id: str(m.id) || `agent-${i}`,
+        agent: str(m.agent),
+        previous: str(m.previous) || undefined,
+        time,
+      });
     } else if (m.type === "assistant") {
       const parts: PartVM[] = [];
       for (const p of m.content ?? []) {
@@ -168,10 +206,11 @@ function buildVMs(data: unknown): MessageVM[] {
         kind: "assistant",
         id: str(m.id) || `assistant-${i}`,
         parts,
+        agent: str(m.agent) || undefined,
         time,
       });
     }
-    // all other message types (idle/system/compaction/agent-selected/...) are skipped
+    // all other message types (idle/system/compaction/model-selected/...) are skipped
   });
   return sortVMs(out);
 }
@@ -214,15 +253,17 @@ export default function ChatApp() {
   const isDesktop = useMediaQuery(theme.breakpoints.up("md"));
 
   const [sessions, setSessions] = useState<SessionVM[]>([]);
+  const [agents, setAgents] = useState<AgentOptionVM[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [history, setHistory] = useState<MessageVM[]>([]);
   const [streaming, setStreaming] = useState<Map<string, StreamingVM>>(new Map());
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [toolRunningCount, setToolRunningCount] = useState(0);
-  const [pendingPermission, setPendingPermission] =
-    useState<PendingPermission | null>(null);
+  const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
+  const [pendingForms, setPendingForms] = useState<FormInfo[]>([]);
   const [sending, setSending] = useState(false);
+  const [switchingAgent, setSwitchingAgent] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
@@ -235,7 +276,7 @@ export default function ChatApp() {
   const olderCursorRef = useRef<string | null>(null);
   const olderPageLoadedRef = useRef(false);
   const loadingOlderGenerationRef = useRef<number | null>(null);
-  const pendingPermissionRef = useRef<PendingPermission | null>(null);
+  const pendingPermissionsRef = useRef<PendingPermission[]>([]);
   const sessionsRef = useRef<SessionVM[]>([]);
   const otherPendingRef = useRef<OtherPending[]>([]);
   const toastKeyRef = useRef(0);
@@ -247,8 +288,8 @@ export default function ChatApp() {
   }, [activeId]);
 
   useEffect(() => {
-    pendingPermissionRef.current = pendingPermission;
-  }, [pendingPermission]);
+    pendingPermissionsRef.current = pendingPermissions;
+  }, [pendingPermissions]);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -280,6 +321,94 @@ export default function ChatApp() {
       /* unauthorized already routed to /signin */
     }
   }, [apiFetch]);
+
+  const applyAgentState = useCallback((id: string, value: unknown) => {
+    const state = asRecord(value);
+    const agentID = str(state.currentAgent);
+    const model = modelRef(state.model);
+    const availableAgents = Array.isArray(state.agents)
+      ? state.agents.map((value) => {
+          const agent = asRecord(value);
+          return {
+            id: str(agent.id),
+            name: str(agent.name) || str(agent.id),
+            description: str(agent.description),
+            model: modelRef(agent.model) ?? null,
+          };
+        })
+      : [];
+    setAgents(availableAgents.filter((agent) => agent.id));
+    setSessions((previous) =>
+      previous.map((session) =>
+        session.id === id
+          ? {
+              ...session,
+              agent: agentID,
+              model,
+            }
+          : session,
+      ),
+    );
+  }, []);
+
+  const fetchAgentState = useCallback(
+    async (id: string, generation?: number) => {
+      try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/agent`);
+        if (!res.ok) return false;
+        const json = await res.json();
+        if (
+          activeIdRef.current !== id ||
+          (generation !== undefined && sessionGenerationRef.current !== generation)
+        ) {
+          return false;
+        }
+        applyAgentState(id, json);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [apiFetch, applyAgentState],
+  );
+
+  const switchAgent = useCallback(
+    async (agentID: string) => {
+      const id = activeIdRef.current;
+      if (!id || !agentID) return;
+      const generation = sessionGenerationRef.current;
+      setSwitchingAgent(true);
+      setError(null);
+      try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/agent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId: agentID }),
+        });
+        const result = asRecord(await res.json());
+        if (!res.ok) {
+          if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+            await fetchAgentState(id, generation);
+            setError(str(result.error) || "Failed to switch agent.");
+          }
+          return;
+        }
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          applyAgentState(id, result);
+        }
+      } catch {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          await fetchAgentState(id, generation);
+          setError("Failed to switch agent.");
+        }
+      } finally {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          setSwitchingAgent(false);
+        }
+      }
+    },
+    [apiFetch, applyAgentState, fetchAgentState],
+  );
 
   const setMessageCursor = useCallback((cursor: string | null) => {
     olderCursorRef.current = cursor;
@@ -393,17 +522,37 @@ export default function ChatApp() {
 
   const resyncPendingPermission = useCallback(async () => {
     const id = activeIdRef.current;
+    const generation = sessionGenerationRef.current;
     if (!id) return;
     try {
       const res = await apiFetch(`/api/sessions/${id}/permissions`);
       const json = asRecord(await res.json());
       const pending = Array.isArray(json.pending) ? json.pending : [];
-      if (activeIdRef.current !== id) return;
-      if (pending.length > 0) {
-        setPendingPermission(pending[0] as PendingPermission);
-      } else {
-        if (pendingPermissionRef.current) setPendingPermission(null);
+      if (
+        activeIdRef.current !== id ||
+        sessionGenerationRef.current !== generation
+      ) return;
+      setPendingPermissions(pending as PendingPermission[]);
+    } catch {
+      /* transient — next reconnect or focus retries */
+    }
+  }, [apiFetch]);
+
+  const resyncPendingForms = useCallback(async () => {
+    const id = activeIdRef.current;
+    const generation = sessionGenerationRef.current;
+    if (!id) return;
+    try {
+      const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/forms`);
+      if (!res.ok) return;
+      const json = asRecord(await res.json());
+      if (
+        activeIdRef.current !== id ||
+        sessionGenerationRef.current !== generation
+      ) {
+        return;
       }
+      setPendingForms(Array.isArray(json.forms) ? (json.forms as FormInfo[]) : []);
     } catch {
       /* transient — next reconnect or focus retries */
     }
@@ -443,9 +592,15 @@ export default function ChatApp() {
       setMessageCursor(null);
       setLoadingOlderMessages(false);
       setSending(false);
+      setSwitchingAgent(false);
       setToolRunningCount(0);
-      setPendingPermission(null);
+      setPendingPermissions([]);
+      setPendingForms([]);
+      setAgents([]);
       setLoadingMessages(true);
+      void fetchAgentState(id, generation);
+      void resyncPendingPermission();
+      void resyncPendingForms();
       try {
         const page = await fetchMessagePage(id);
         if (
@@ -468,22 +623,8 @@ export default function ChatApp() {
           setLoadingMessages(false);
         }
       }
-      try {
-        const res = await apiFetch(`/api/sessions/${id}/permissions`);
-        const json = asRecord(await res.json());
-        const pending = Array.isArray(json.pending) ? json.pending : [];
-        if (
-          pending.length > 0 &&
-          activeIdRef.current === sid &&
-          sessionGenerationRef.current === generation
-        ) {
-          setPendingPermission(pending[0] as PendingPermission);
-        }
-      } catch {
-        /* unauthorized already routed to /signin */
-      }
     },
-    [apiFetch, fetchMessagePage, setMessageCursor],
+    [fetchAgentState, fetchMessagePage, resyncPendingForms, resyncPendingPermission, setMessageCursor],
   );
 
   const newChat = useCallback(async () => {
@@ -498,6 +639,8 @@ export default function ChatApp() {
         title: str(created.title),
         created: Number(created.created) || Date.now(),
         updated: Number(created.updated) || Date.now(),
+        agent: str(created.agent),
+        model: modelRef(created.model),
       };
       setSessions((prev) => [vm, ...prev]);
       await openSession(id);
@@ -579,7 +722,7 @@ export default function ChatApp() {
       switch (type) {
         case "permission.asked":
           if (str(d.sessionID) === activeIdRef.current) {
-            setPendingPermission({
+            const permission: PendingPermission = {
               id: str(d.id),
               action: str(d.action),
               resources: Array.isArray(d.resources)
@@ -589,7 +732,11 @@ export default function ChatApp() {
                 ? d.save.map((s) => str(s)).filter(Boolean)
                 : undefined,
               message: str(d.message) || undefined,
-            });
+            };
+            setPendingPermissions((previous) => [
+              ...previous.filter((item) => item.id !== permission.id),
+              permission,
+            ]);
           } else {
             const sid = str(d.sessionID);
             const pid = str(d.id);
@@ -611,16 +758,55 @@ export default function ChatApp() {
           }
           break;
         case "permission.replied": {
-          if (pendingPermissionRef.current?.id === str(d.requestID)) {
-            setPendingPermission(null);
-          }
           const rid = str(d.requestID);
+          if (pendingPermissionsRef.current.some((item) => item.id === rid)) {
+            setPendingPermissions((previous) => previous.filter((item) => item.id !== rid));
+            void resyncPendingPermission();
+          }
           const sid2 = str(d.sessionID);
           const next = otherPendingRef.current.filter((x) => x.id !== rid);
           if (next.length !== otherPendingRef.current.length) setOtherPending(next);
           setPermissionToast((t) => (t && t.sessionID === sid2 ? null : t));
           break;
         }
+        case "session.agent.selected": {
+          const sid = str(d.sessionID);
+          const agent = str(d.agent);
+          if (sid && agent) {
+            setSessions((previous) =>
+              previous.map((session) =>
+                session.id === sid ? { ...session, agent } : session,
+              ),
+            );
+            if (sid === activeIdRef.current) void fetchAgentState(sid);
+          }
+          break;
+        }
+        case "session.model.selected": {
+          const sid = str(d.sessionID);
+          const model = modelRef(d.model);
+          if (sid && model) {
+            setSessions((previous) =>
+              previous.map((session) =>
+                session.id === sid ? { ...session, model } : session,
+              ),
+            );
+          }
+          break;
+        }
+        case "agent.updated":
+        case "config.updated":
+          if (activeIdRef.current) void fetchAgentState(activeIdRef.current);
+          break;
+        case "form.created": {
+          const form = asRecord(d.form);
+          if (str(form.sessionID) === activeIdRef.current) void resyncPendingForms();
+          break;
+        }
+        case "form.replied":
+        case "form.cancelled":
+          if (str(d.sessionID) === activeIdRef.current) void resyncPendingForms();
+          break;
         case "session.text.started":
           if (str(d.sessionID) === activeIdRef.current) {
             const mid = str(d.assistantMessageID);
@@ -703,9 +889,11 @@ export default function ChatApp() {
           break;
         case "server.connected":
           void resyncPendingPermission();
+          void resyncPendingForms();
           void refetchPendingPermissions();
           void refetchSessions();
           void refetchMessages();
+          if (activeIdRef.current) void fetchAgentState(activeIdRef.current);
           break;
         default:
           break;
@@ -723,6 +911,7 @@ export default function ChatApp() {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
         void resyncPendingPermission();
+        void resyncPendingForms();
         void refetchPendingPermissions();
         void refetchMessages();
       }
@@ -734,7 +923,14 @@ export default function ChatApp() {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       if (toolTimerRef.current) clearTimeout(toolTimerRef.current);
     };
-  }, [refetchSessions, refetchMessages, resyncPendingPermission, refetchPendingPermissions]);
+  }, [
+    fetchAgentState,
+    refetchSessions,
+    refetchMessages,
+    resyncPendingForms,
+    resyncPendingPermission,
+    refetchPendingPermissions,
+  ]);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -757,6 +953,11 @@ export default function ChatApp() {
     [history, streaming],
   );
 
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const agentNames = useMemo(
+    () => Object.fromEntries(agents.map((agent) => [agent.id, agent.name])),
+    [agents],
+  );
   const showMobileList = !isDesktop && !activeId;
 
   return (
@@ -800,13 +1001,18 @@ export default function ChatApp() {
       ) : activeId ? (
         <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <ChatView
-            title={sessions.find((s) => s.id === activeId)?.title || "Untitled"}
+            title={activeSession?.title || "Untitled"}
             messages={displayMessages}
+            agentNames={agentNames}
+            agentId={activeSession?.agent ?? ""}
+            agents={agents}
+            agentBusy={switchingAgent}
+            onSwitchAgent={(agentID) => void switchAgent(agentID)}
             toolRunningCount={toolRunningCount}
             loading={loadingMessages}
             hasOlderMessages={olderCursor !== null}
             loadingOlderMessages={loadingOlderMessages}
-            sending={sending}
+            sending={sending || switchingAgent}
             onSend={sendPrompt}
             onBack={
               isDesktop
@@ -816,9 +1022,17 @@ export default function ChatApp() {
                     ++headRequestRef.current;
                     activeIdRef.current = null;
                     setActiveId(null);
+                    setAgents([]);
+                    setPendingForms([]);
+                    setPendingPermissions([]);
                   }
             }
-            onRefresh={() => void refetchMessages()}
+            onRefresh={() => {
+              void refetchMessages();
+              void fetchAgentState(activeId);
+              void resyncPendingPermission();
+              void resyncPendingForms();
+            }}
             onLoadOlder={loadOlderMessages}
             onOpenSession={openSession}
           />
@@ -840,11 +1054,22 @@ export default function ChatApp() {
         </Box>
       )}
 
-      {pendingPermission && activeId && (
+      {pendingPermissions[0] && activeId && (
         <PermissionDialog
-          permission={pendingPermission}
+          permission={pendingPermissions[0]}
           sessionId={activeId}
-          onDone={() => setPendingPermission(null)}
+          onDone={() => void resyncPendingPermission()}
+        />
+      )}
+      {pendingPermissions.length === 0 && pendingForms[0] && activeId && (
+        <FormDialog
+          key={pendingForms[0].id}
+          form={pendingForms[0]}
+          sessionID={activeId}
+          onDone={() => {
+            setPendingForms((previous) => previous.filter((form) => form.id !== pendingForms[0].id));
+            void resyncPendingForms();
+          }}
         />
       )}
 

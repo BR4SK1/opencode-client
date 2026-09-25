@@ -26,6 +26,8 @@ export async function GET() {
       title: s.title ?? "",
       created: s.time.created,
       updated: s.time.updated,
+      agent: s.agent ?? "",
+      model: s.model ?? null,
       ...(s.parentID ? { parentID: s.parentID } : {}),
     })),
   });
@@ -43,6 +45,8 @@ export async function POST() {
         title: created.title ?? "",
         created: created.time.created,
         updated: created.time.updated,
+        agent: created.agent ?? "",
+        model: created.model ?? null,
       },
     },
     { status: 201 },

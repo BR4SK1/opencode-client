@@ -3,6 +3,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import ChevronRight from "@mui/icons-material/ChevronRight";
+import Close from "@mui/icons-material/Close";
+import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
 import SmartToy from "@mui/icons-material/SmartToy";
@@ -13,9 +15,18 @@ import {
   Button,
   Chip,
   CircularProgress,
+  Divider,
+  Drawer,
+  FormControl,
   IconButton,
   LinearProgress,
+  List,
+  ListItemButton,
+  ListItemIcon,
+  ListItemText,
   Paper,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Toolbar,
@@ -115,14 +126,14 @@ function SegmentedText({
   );
 }
 
-function AssistantHeader({ time }: { time?: number }) {
+function AssistantHeader({ time, agent }: { time?: number; agent?: string }) {
   return (
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
       <Avatar sx={{ width: 24, height: 24, bgcolor: "primary.main" }}>
         <SmartToy sx={{ fontSize: 14, color: "primary.contrastText" }} />
       </Avatar>
       <Typography variant="caption" sx={{ color: "text.secondary", fontWeight: 600 }}>
-        OpenCode
+        {agent ? `OpenCode · ${agent}` : "OpenCode"}
       </Typography>
       {time !== undefined && (
         <Typography variant="caption" sx={{ color: "text.secondary" }}>
@@ -196,11 +207,16 @@ function ToolParts({
 interface ChatViewProps {
   title: string;
   messages: MessageVM[];
+  agentNames: Record<string, string>;
   toolRunningCount: number;
   loading: boolean;
   hasOlderMessages: boolean;
   loadingOlderMessages: boolean;
   sending: boolean;
+  agentId: string;
+  agents: Array<{ id: string; name: string; description: string }>;
+  agentBusy: boolean;
+  onSwitchAgent: (agentID: string) => void;
   onSend: (text: string) => Promise<boolean>;
   onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
@@ -211,11 +227,16 @@ interface ChatViewProps {
 export default function ChatView({
   title,
   messages,
+  agentNames,
   toolRunningCount,
   loading,
   hasOlderMessages,
   loadingOlderMessages,
   sending,
+  agentId,
+  agents,
+  agentBusy,
+  onSwitchAgent,
   onSend,
   onLoadOlder,
   onBack,
@@ -223,6 +244,7 @@ export default function ChatView({
   onOpenSession,
 }: ChatViewProps) {
   const [text, setText] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const scrollAnchorRef = useRef<{
@@ -318,20 +340,96 @@ export default function ChatView({
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
-          <ThemeToggle />
+          <Box sx={{ flexShrink: 0, width: { xs: 116, sm: 148, md: 180 }, mx: { xs: 0.5, sm: 1 } }}>
+            <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+              <Select
+                value={agentId || ""}
+                onChange={(event) => onSwitchAgent(event.target.value)}
+                displayEmpty
+                inputProps={{ "aria-label": "Select agent" }}
+                sx={{
+                  "& .MuiSelect-select": {
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  },
+                }}
+              >
+                {!agentId && (
+                  <MenuItem value="" disabled>
+                    {agentBusy ? "Loading agent…" : "Select agent"}
+                  </MenuItem>
+                )}
+                {!agents.some((agent) => agent.id === agentId) && agentId && (
+                  <MenuItem value={agentId} disabled>
+                    Unavailable: {agentId}
+                  </MenuItem>
+                )}
+                {agents.map((agent) => (
+                  <MenuItem key={agent.id} value={agent.id} title={agent.description}>
+                    {agent.name || agent.id}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+          <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center" }}>
+            <ThemeToggle />
+            <IconButton
+              aria-label="Refresh messages"
+              size="large"
+              sx={{ minWidth: 48, minHeight: 48 }}
+              onClick={onRefresh}
+            >
+              <Refresh />
+            </IconButton>
+          </Box>
           <IconButton
-            aria-label="Refresh messages"
+            aria-label="Open chat menu"
             size="large"
-            sx={{
-              minWidth: 48,
-              minHeight: 48,
-            }}
-            onClick={onRefresh}
+            sx={{ display: { xs: "inline-flex", md: "none" }, minWidth: 48, minHeight: 48 }}
+            onClick={() => setMenuOpen(true)}
           >
-            <Refresh />
+            <MenuIcon />
           </IconButton>
         </Toolbar>
       </AppBar>
+
+      <Drawer
+        anchor="right"
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        sx={{ "& .MuiDrawer-paper": { width: 288, maxWidth: "85vw" } }}
+      >
+        <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", p: 2 }}>
+          <Typography variant="h6" component="h2">
+            Chat menu
+          </Typography>
+          <IconButton aria-label="Close chat menu" onClick={() => setMenuOpen(false)}>
+            <Close />
+          </IconButton>
+        </Stack>
+        <Divider />
+        <List>
+          <ListItemButton
+            onClick={() => {
+              setMenuOpen(false);
+              onRefresh();
+            }}
+            sx={{ minHeight: 56 }}
+          >
+            <ListItemIcon>
+              <Refresh />
+            </ListItemIcon>
+            <ListItemText primary="Refresh messages" />
+          </ListItemButton>
+          <Divider component="li" />
+          <ListItemButton component="div" sx={{ minHeight: 64, cursor: "default" }}>
+            <ListItemText primary="Theme" secondary="Cycle system, light, and dark" />
+            <ThemeToggle />
+          </ListItemButton>
+        </List>
+      </Drawer>
 
       {loading && <LinearProgress />}
 
@@ -365,7 +463,16 @@ export default function ChatView({
             </Button>
           )}
           {messages.map((m) =>
-            m.kind === "user" ? (
+            m.kind === "agent" ? (
+              <Typography
+                key={`agent-${m.id}`}
+                variant="caption"
+                color="text.secondary"
+                sx={{ alignSelf: "center", py: 0.5 }}
+              >
+                Agent switched{m.previous ? ` from ${agentNames[m.previous] || m.previous}` : ""} to {agentNames[m.agent] || m.agent}
+              </Typography>
+            ) : m.kind === "user" ? (
               <Stack key={m.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
                 <Paper
                   sx={{
@@ -390,7 +497,10 @@ export default function ChatView({
               </Stack>
             ) : (
               <Stack key={m.id} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
-                <AssistantHeader time={m.time} />
+                <AssistantHeader
+                  time={m.time}
+                  agent={m.agent ? agentNames[m.agent] || m.agent : undefined}
+                />
                 <AssistantBubble>
                   {m.parts
                     .filter((p): p is Extract<PartVM, { kind: "text" }> => p.kind === "text")

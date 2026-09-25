@@ -1,6 +1,6 @@
 # opencode-client
 
-A mobile-first web client for chatting with an [OpenCode](https://opencode.ai) server. It supports session browsing, live message streaming, and permission prompts.
+A mobile-first web client for chatting with an [OpenCode](https://opencode.ai) server. It supports session browsing, session-specific agent switching, live message streaming, permission prompts, and interactive agent forms.
 
 Built with Next.js App Router, React, TypeScript, Material UI, NextAuth v5 with generic OIDC, and the server-side `@opencode/client` package.
 
