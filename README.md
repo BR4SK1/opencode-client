@@ -30,6 +30,7 @@ pnpm dev
 | `AUTH_OIDC_ISSUER` | OIDC issuer URL. |
 | `AUTH_OIDC_ID` | OIDC client ID. |
 | `AUTH_OIDC_SECRET` | OIDC client secret. |
+| `AUTH_ALLOWED_EMAILS` | Comma-separated allowlist of exact email addresses allowed to sign in. Required for OIDC access; matching is case-insensitive. |
 | `OPENCODE_BASE_URL` | OpenCode server URL; defaults to `http://localhost:4096`. |
 | `OPENCODE_TOKEN` | Optional authorization header value sent to OpenCode, such as `Bearer TOKEN` or a `Basic ...` value. |
 | `AUTH_DEMO` | Set to `true` for the local demo sign-in only when OIDC is not configured. It is disabled in production. |
@@ -38,7 +39,7 @@ The OpenCode client and token are used by server-side code only. Keep real secre
 
 ## Access control
 
-Every identity accepted by the configured OIDC provider can use the same configured OpenCode server and credentials, including sending prompts and replying to permission requests. Restrict access to the OIDC client to trusted users or groups. Do not expose the app publicly without appropriate identity-provider restrictions.
+The application accepts only identities whose verified OIDC email is in `AUTH_ALLOWED_EMAILS`. The allowlist is checked at sign-in and whenever an existing JWT session is read, so removing an address revokes subsequent access. Configure Keycloak MFA and limit OIDC client access as additional controls. Every allowed identity can use the same configured OpenCode server and credentials, including sending prompts and replying to permission requests. Do not expose the app publicly without appropriate identity-provider restrictions.
 
 ## Checks
 

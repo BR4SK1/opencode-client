@@ -18,6 +18,25 @@ export const demoMode: boolean =
   process.env.NODE_ENV !== "production" &&
   !oidcConfigured;
 
+const allowedEmails = new Set(
+  (process.env.AUTH_ALLOWED_EMAILS ?? "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+function isAllowedEmail(email: string | null | undefined): boolean {
+  const normalizedEmail = email?.trim().toLowerCase();
+  if (!normalizedEmail) return false;
+
+  // Keep the credential-based demo usable only in local development.
+  if (demoMode && allowedEmails.size === 0) {
+    return normalizedEmail === "demo@localhost";
+  }
+
+  return allowedEmails.has(normalizedEmail);
+}
+
 const providers = oidcConfigured
   ? [
       {
@@ -49,4 +68,16 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   session: { strategy: "jwt" },
   trustHost: true,
   pages: { signIn: "/signin" },
+  callbacks: {
+    signIn({ user, profile }) {
+      if (!demoMode && profile?.email_verified !== true) return false;
+      return isAllowedEmail(user.email);
+    },
+    jwt({ token }) {
+      // Re-check existing JWT sessions on every auth() call so removing an
+      // address from the allowlist revokes its access without waiting for the
+      // cookie's expiry.
+      return isAllowedEmail(token.email) ? token : null;
+    },
+  },
 });
