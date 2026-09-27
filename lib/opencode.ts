@@ -9,3 +9,13 @@ if (process.env.OPENCODE_TOKEN) {
 }
 
 export const opencode = OpenCode.make({ baseUrl, headers });
+
+export function opencodeRequest(path: string, init?: RequestInit) {
+  return fetch(new URL(path, baseUrl), {
+    ...init,
+    headers: {
+      ...headers,
+      ...init?.headers,
+    },
+  });
+}

@@ -19,6 +19,7 @@ import SessionList from "./SessionList";
 import ChatView from "./ChatView";
 import PermissionDialog from "./PermissionDialog";
 import FormDialog from "./FormDialog";
+import QuestionDialog from "./QuestionDialog";
 
 export interface SessionVM {
   id: string;
@@ -79,9 +80,23 @@ export interface PendingPermission {
   message?: string;
 }
 
+export interface PendingQuestion {
+  id: string;
+  sessionID: string;
+  questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ label: string; description: string }>;
+    multiple?: boolean;
+    custom?: boolean;
+  }>;
+}
+
 type OtherPending = { id: string; sessionID: string; action: string; message?: string };
 
 type PermissionToast = { sessionID: string; title: string; count: number; key: number };
+type FormToast = { sessionID: string; title: string; count: number; key: number };
+type QuestionToast = { sessionID: string; title: string; count: number; key: number };
 
 /* Raw shapes used only to map history into view models. */
 interface RawPart {
@@ -109,6 +124,30 @@ function asRecord(v: unknown): Record<string, unknown> {
 
 function str(v: unknown): string {
   return typeof v === "string" ? v : "";
+}
+
+function questionRequest(value: unknown): PendingQuestion | undefined {
+  const request = asRecord(value);
+  const id = str(request.id);
+  const sessionID = str(request.sessionID);
+  if (!id || !sessionID || !Array.isArray(request.questions)) return undefined;
+  const questions = request.questions.map((value) => {
+    const item = asRecord(value);
+    return {
+      header: str(item.header),
+      question: str(item.question),
+      options: Array.isArray(item.options)
+        ? item.options.map((option) => {
+            const record = asRecord(option);
+            return { label: str(record.label), description: str(record.description) };
+          }).filter((option) => option.label)
+        : [],
+      multiple: item.multiple === true,
+      custom: item.custom === true,
+    };
+  }).filter((item) => item.question && item.options.length > 0);
+  if (questions.length === 0) return undefined;
+  return { id, sessionID, questions };
 }
 
 function modelRef(v: unknown): ModelRef | undefined {
@@ -262,6 +301,7 @@ export default function ChatApp() {
   const [toolRunningCount, setToolRunningCount] = useState(0);
   const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
   const [pendingForms, setPendingForms] = useState<FormInfo[]>([]);
+  const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
   const [sending, setSending] = useState(false);
   const [switchingAgent, setSwitchingAgent] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -269,6 +309,8 @@ export default function ChatApp() {
   const [connectionLost, setConnectionLost] = useState(false);
   const [otherPending, setOtherPending] = useState<OtherPending[]>([]);
   const [permissionToast, setPermissionToast] = useState<PermissionToast | null>(null);
+  const [formToast, setFormToast] = useState<FormToast | null>(null);
+  const [questionToast, setQuestionToast] = useState<QuestionToast | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
   const sessionGenerationRef = useRef(0);
@@ -277,9 +319,12 @@ export default function ChatApp() {
   const olderPageLoadedRef = useRef(false);
   const loadingOlderGenerationRef = useRef<number | null>(null);
   const pendingPermissionsRef = useRef<PendingPermission[]>([]);
+  const pendingQuestionsRevisionRef = useRef(0);
   const sessionsRef = useRef<SessionVM[]>([]);
   const otherPendingRef = useRef<OtherPending[]>([]);
   const toastKeyRef = useRef(0);
+  const formToastKeyRef = useRef(0);
+  const questionToastKeyRef = useRef(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -539,20 +584,27 @@ export default function ChatApp() {
   }, [apiFetch]);
 
   const resyncPendingForms = useCallback(async () => {
-    const id = activeIdRef.current;
-    const generation = sessionGenerationRef.current;
-    if (!id) return;
     try {
-      const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/forms`);
+      const res = await apiFetch("/api/forms/pending");
       if (!res.ok) return;
       const json = asRecord(await res.json());
-      if (
-        activeIdRef.current !== id ||
-        sessionGenerationRef.current !== generation
-      ) {
-        return;
-      }
       setPendingForms(Array.isArray(json.forms) ? (json.forms as FormInfo[]) : []);
+    } catch {
+      /* transient — next reconnect or focus retries */
+    }
+  }, [apiFetch]);
+
+  const resyncPendingQuestions = useCallback(async () => {
+    const revision = pendingQuestionsRevisionRef.current;
+    try {
+      const res = await apiFetch("/api/questions/pending");
+      if (!res.ok) return;
+      const json = asRecord(await res.json());
+      if (revision !== pendingQuestionsRevisionRef.current) return;
+      const questions = Array.isArray(json.questions)
+        ? json.questions.map(questionRequest).filter((item): item is PendingQuestion => Boolean(item))
+        : [];
+      setPendingQuestions(questions);
     } catch {
       /* transient — next reconnect or focus retries */
     }
@@ -595,12 +647,12 @@ export default function ChatApp() {
       setSwitchingAgent(false);
       setToolRunningCount(0);
       setPendingPermissions([]);
-      setPendingForms([]);
       setAgents([]);
       setLoadingMessages(true);
       void fetchAgentState(id, generation);
       void resyncPendingPermission();
       void resyncPendingForms();
+      void resyncPendingQuestions();
       try {
         const page = await fetchMessagePage(id);
         if (
@@ -624,7 +676,7 @@ export default function ChatApp() {
         }
       }
     },
-    [fetchAgentState, fetchMessagePage, resyncPendingForms, resyncPendingPermission, setMessageCursor],
+    [fetchAgentState, fetchMessagePage, resyncPendingForms, resyncPendingPermission, resyncPendingQuestions, setMessageCursor],
   );
 
   const newChat = useCallback(async () => {
@@ -800,13 +852,69 @@ export default function ChatApp() {
           break;
         case "form.created": {
           const form = asRecord(d.form);
-          if (str(form.sessionID) === activeIdRef.current) void resyncPendingForms();
+          const sid = str(form.sessionID);
+          if (sid) {
+            void resyncPendingForms();
+            if (sid !== activeIdRef.current) {
+              const session = sessionsRef.current.find((item) => item.id === sid);
+              if (!session) void refetchSessions();
+              setFormToast((previous) =>
+                previous && previous.sessionID === sid
+                  ? { ...previous, count: previous.count + 1, key: ++formToastKeyRef.current }
+                  : {
+                      sessionID: sid,
+                      title: session?.title || "Untitled",
+                      count: 1,
+                      key: ++formToastKeyRef.current,
+                    },
+              );
+            }
+          }
           break;
         }
         case "form.replied":
-        case "form.cancelled":
-          if (str(d.sessionID) === activeIdRef.current) void resyncPendingForms();
+        case "form.cancelled": {
+          const formID = str(d.id);
+          if (formID) setPendingForms((previous) => previous.filter((form) => form.id !== formID));
+          void resyncPendingForms();
           break;
+        }
+        case "question.asked": {
+          pendingQuestionsRevisionRef.current += 1;
+          const question = questionRequest(d);
+          if (!question) break;
+          setPendingQuestions((previous) => [
+            ...previous.filter((item) => item.id !== question.id),
+            question,
+          ]);
+          if (question.sessionID !== activeIdRef.current) {
+            const session = sessionsRef.current.find((item) => item.id === question.sessionID);
+            if (!session) void refetchSessions();
+            setQuestionToast((previous) =>
+              previous && previous.sessionID === question.sessionID
+                ? { ...previous, count: previous.count + 1, key: ++questionToastKeyRef.current }
+                : {
+                    sessionID: question.sessionID,
+                    title: session?.title || "Untitled",
+                    count: 1,
+                    key: ++questionToastKeyRef.current,
+                  },
+            );
+          }
+          break;
+        }
+        case "question.replied":
+        case "question.rejected": {
+          pendingQuestionsRevisionRef.current += 1;
+          const requestID = str(d.requestID);
+          if (requestID) {
+            setPendingQuestions((previous) => previous.filter((item) => item.id !== requestID));
+            const sid = str(d.sessionID);
+            setQuestionToast((previous) => previous?.sessionID === sid ? null : previous);
+          }
+          void resyncPendingQuestions();
+          break;
+        }
         case "session.text.started":
           if (str(d.sessionID) === activeIdRef.current) {
             const mid = str(d.assistantMessageID);
@@ -890,6 +998,7 @@ export default function ChatApp() {
         case "server.connected":
           void resyncPendingPermission();
           void resyncPendingForms();
+          void resyncPendingQuestions();
           void refetchPendingPermissions();
           void refetchSessions();
           void refetchMessages();
@@ -912,6 +1021,7 @@ export default function ChatApp() {
       if (document.visibilityState === "visible") {
         void resyncPendingPermission();
         void resyncPendingForms();
+        void resyncPendingQuestions();
         void refetchPendingPermissions();
         void refetchMessages();
       }
@@ -928,6 +1038,7 @@ export default function ChatApp() {
     refetchSessions,
     refetchMessages,
     resyncPendingForms,
+    resyncPendingQuestions,
     resyncPendingPermission,
     refetchPendingPermissions,
   ]);
@@ -936,17 +1047,25 @@ export default function ChatApp() {
     const t = setTimeout(() => {
       void refetchSessions();
       void refetchPendingPermissions();
+      void resyncPendingForms();
+      void resyncPendingQuestions();
     }, 0);
     return () => clearTimeout(t);
-  }, [refetchSessions, refetchPendingPermissions]);
+  }, [refetchSessions, refetchPendingPermissions, resyncPendingForms, resyncPendingQuestions]);
 
   const pendingCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const p of otherPending) {
       counts.set(p.sessionID, (counts.get(p.sessionID) ?? 0) + 1);
     }
+    for (const form of pendingForms) {
+      counts.set(form.sessionID, (counts.get(form.sessionID) ?? 0) + 1);
+    }
+    for (const question of pendingQuestions) {
+      counts.set(question.sessionID, (counts.get(question.sessionID) ?? 0) + 1);
+    }
     return counts;
-  }, [otherPending]);
+  }, [otherPending, pendingForms, pendingQuestions]);
 
   const displayMessages = useMemo(
     () => withStreamingMessages(history, streaming),
@@ -954,6 +1073,8 @@ export default function ChatApp() {
   );
 
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activePendingForm = pendingForms.find((form) => form.sessionID === activeId);
+  const activePendingQuestion = pendingQuestions.find((question) => question.sessionID === activeId);
   const agentNames = useMemo(
     () => Object.fromEntries(agents.map((agent) => [agent.id, agent.name])),
     [agents],
@@ -1023,7 +1144,6 @@ export default function ChatApp() {
                     activeIdRef.current = null;
                     setActiveId(null);
                     setAgents([]);
-                    setPendingForms([]);
                     setPendingPermissions([]);
                   }
             }
@@ -1032,6 +1152,7 @@ export default function ChatApp() {
               void fetchAgentState(activeId);
               void resyncPendingPermission();
               void resyncPendingForms();
+              void resyncPendingQuestions();
             }}
             onLoadOlder={loadOlderMessages}
             onOpenSession={openSession}
@@ -1061,17 +1182,105 @@ export default function ChatApp() {
           onDone={() => void resyncPendingPermission()}
         />
       )}
-      {pendingPermissions.length === 0 && pendingForms[0] && activeId && (
+      {pendingPermissions.length === 0 && activeId && activePendingQuestion && (
+        <QuestionDialog
+          key={activePendingQuestion.id}
+          request={activePendingQuestion}
+          onDone={() => {
+            setPendingQuestions((previous) => previous.filter((item) => item.id !== activePendingQuestion.id));
+            void resyncPendingQuestions();
+          }}
+        />
+      )}
+      {pendingPermissions.length === 0 && !activePendingQuestion && activeId && activePendingForm && (
         <FormDialog
-          key={pendingForms[0].id}
-          form={pendingForms[0]}
+          key={activePendingForm.id}
+          form={activePendingForm}
           sessionID={activeId}
           onDone={() => {
-            setPendingForms((previous) => previous.filter((form) => form.id !== pendingForms[0].id));
+            setPendingForms((previous) => previous.filter((item) => item.id !== activePendingForm.id));
             void resyncPendingForms();
           }}
         />
       )}
+
+      <Snackbar
+        key={formToast?.key ?? 0}
+        open={formToast !== null}
+        autoHideDuration={7000}
+        slotProps={{ content: { sx: { borderRadius: 2 } } }}
+        onClose={(_event, reason) => {
+          if (reason !== "clickaway") setFormToast(null);
+        }}
+        message={
+          formToast
+            ? `Session “${formToast.title}” needs an answer${formToast.count > 1 ? ` (${formToast.count} pending)` : ""}`
+            : ""
+        }
+        action={
+          formToast && (
+            <Button
+              color="inherit"
+              variant="outlined"
+              size="small"
+              sx={{ height: 40, flexShrink: 0 }}
+              onClick={() => {
+                const sid = formToast.sessionID;
+                setFormToast(null);
+                void openSession(sid);
+              }}
+            >
+              Open
+            </Button>
+          )
+        }
+        sx={{
+          position: "fixed",
+          bottom: 144,
+          left: 16,
+          right: 16,
+          zIndex: (theme) => theme.zIndex.snackbar,
+        }}
+      />
+
+      <Snackbar
+        key={questionToast?.key ?? 0}
+        open={questionToast !== null}
+        autoHideDuration={7000}
+        slotProps={{ content: { sx: { borderRadius: 2 } } }}
+        onClose={(_event, reason) => {
+          if (reason !== "clickaway") setQuestionToast(null);
+        }}
+        message={
+          questionToast
+            ? `Session “${questionToast.title}” has a question${questionToast.count > 1 ? ` (${questionToast.count} pending)` : ""}`
+            : ""
+        }
+        action={
+          questionToast && (
+            <Button
+              color="inherit"
+              variant="outlined"
+              size="small"
+              sx={{ height: 40, flexShrink: 0 }}
+              onClick={() => {
+                const sid = questionToast.sessionID;
+                setQuestionToast(null);
+                void openSession(sid);
+              }}
+            >
+              Open
+            </Button>
+          )
+        }
+        sx={{
+          position: "fixed",
+          bottom: 200,
+          left: 16,
+          right: 16,
+          zIndex: (theme) => theme.zIndex.snackbar,
+        }}
+      />
 
       <Snackbar
         key={permissionToast?.key ?? 0}

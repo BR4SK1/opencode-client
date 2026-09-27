@@ -244,7 +244,14 @@ export default function FormDialog({ form, sessionID, onDone }: FormDialogProps)
           >
             {field.options.map((option) => (
               <MenuItem key={option.value} value={option.value}>
-                {option.label}
+                <Stack spacing={0.25}>
+                  <Typography variant="body2">{option.label}</Typography>
+                  {option.description && (
+                    <Typography variant="caption" color="text.secondary">
+                      {option.description}
+                    </Typography>
+                  )}
+                </Stack>
               </MenuItem>
             ))}
             {field.custom && <MenuItem value="__custom__">Other…</MenuItem>}
@@ -280,11 +287,18 @@ export default function FormDialog({ form, sessionID, onDone }: FormDialogProps)
             onChange={(event) => updateAnswer(field.key, event.target.value)}
             helperText={field.description}
           >
-            {field.options.map((option) => (
-              <MenuItem key={option.value} value={option.value}>
-                {option.label}
-              </MenuItem>
-            ))}
+              {field.options.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  <Stack spacing={0.25}>
+                    <Typography variant="body2">{option.label}</Typography>
+                    {option.description && (
+                      <Typography variant="caption" color="text.secondary">
+                        {option.description}
+                      </Typography>
+                    )}
+                  </Stack>
+                </MenuItem>
+              ))}
             {field.custom && <MenuItem value="__custom__">Other…</MenuItem>}
           </TextField>
           {field.custom && answers[field.key] === "__custom__" && (
