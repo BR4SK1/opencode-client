@@ -339,6 +339,8 @@ export default function ChatApp() {
   const loadingOlderGenerationRef = useRef<number | null>(null);
   const pendingPermissionsRef = useRef<PendingPermission[]>([]);
   const pendingQuestionsRevisionRef = useRef(0);
+  const activityRevisionRef = useRef(0);
+  const activitySnapshotRequestRef = useRef(0);
   const sessionsRef = useRef<SessionVM[]>([]);
   const otherPendingRef = useRef<OtherPending[]>([]);
   const toastKeyRef = useRef(0);
@@ -375,6 +377,33 @@ export default function ChatApp() {
     },
     [router],
   );
+
+  const reconcileSessionActivity = useCallback(async () => {
+    const activityRevision = activityRevisionRef.current;
+    const request = ++activitySnapshotRequestRef.current;
+    try {
+      const res = await apiFetch("/api/sessions/active");
+      if (!res.ok) return;
+      const json = asRecord(await res.json());
+      if (!Array.isArray(json.sessionIDs)) return;
+
+      // A newer SSE activity event makes this snapshot potentially stale.
+      // Also ignore earlier overlapping snapshots if a later one was requested.
+      if (
+        activityRevision !== activityRevisionRef.current ||
+        request !== activitySnapshotRequestRef.current
+      ) {
+        return;
+      }
+
+      const runningIDs = json.sessionIDs.filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      setSessionActivity(new Map(runningIDs.map((id) => [id, "running" as const])));
+    } catch {
+      // Keep the current activity state when reconciliation fails.
+    }
+  }, [apiFetch]);
 
   const refetchSessions = useCallback(async () => {
     try {
@@ -795,6 +824,13 @@ export default function ChatApp() {
           const sid = str(d.sessionID);
           const status = asRecord(d.status);
           if (sid) {
+            if (
+              status.type === "busy" ||
+              status.type === "retry" ||
+              status.type === "idle"
+            ) {
+              activityRevisionRef.current += 1;
+            }
             setSessionActivity((previous) => {
               const next = new Map(previous);
               if (status.type === "busy" || status.type === "retry") {
@@ -952,6 +988,7 @@ export default function ChatApp() {
         }
         case "session.text.started":
           if (str(d.sessionID)) {
+            activityRevisionRef.current += 1;
             setSessionActivity((previous) => new Map(previous).set(str(d.sessionID), "running"));
           }
           if (str(d.sessionID) === activeIdRef.current) {
@@ -1010,6 +1047,7 @@ export default function ChatApp() {
           break;
         case "session.idle":
           if (str(d.sessionID)) {
+            activityRevisionRef.current += 1;
             setSessionActivity((previous) => {
               const next = new Map(previous);
               next.delete(str(d.sessionID));
@@ -1028,6 +1066,7 @@ export default function ChatApp() {
         case "session.tool.success":
         case "session.tool.failed":
           if (type === "session.tool.called" && str(d.sessionID)) {
+            activityRevisionRef.current += 1;
             setSessionActivity((previous) => new Map(previous).set(str(d.sessionID), "running"));
           }
           if (str(d.sessionID) === activeIdRef.current) {
@@ -1044,10 +1083,7 @@ export default function ChatApp() {
           void refetchSessions();
           break;
         case "server.connected":
-          // The API exposes pending requests but no snapshot of in-flight runs.
-          // Drop potentially stale activity from before reconnect and rebuild it
-          // from subsequent global status/activity events.
-          setSessionActivity(new Map());
+          void reconcileSessionActivity();
           void resyncPendingPermission();
           void resyncPendingForms();
           void resyncPendingQuestions();
@@ -1060,6 +1096,12 @@ export default function ChatApp() {
           break;
       }
     };
+    const initialActivitySync = setTimeout(() => {
+      void reconcileSessionActivity();
+    }, 0);
+    const activityInterval = setInterval(() => {
+      void reconcileSessionActivity();
+    }, 15000);
     es.onerror = () => {
       if (es.readyState === EventSource.CLOSED) {
         // Permanent failure — the browser gave up reconnecting.
@@ -1071,6 +1113,7 @@ export default function ChatApp() {
     };
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        void reconcileSessionActivity();
         void resyncPendingPermission();
         void resyncPendingForms();
         void resyncPendingQuestions();
@@ -1081,11 +1124,14 @@ export default function ChatApp() {
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       es.close();
+      clearTimeout(initialActivitySync);
+      clearInterval(activityInterval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
       if (toolTimerRef.current) clearTimeout(toolTimerRef.current);
     };
   }, [
+    reconcileSessionActivity,
     fetchAgentState,
     refetchSessions,
     refetchMessages,
