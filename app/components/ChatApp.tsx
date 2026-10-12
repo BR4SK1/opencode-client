@@ -1087,6 +1087,16 @@ export default function ChatApp() {
     () => Object.fromEntries(agents.map((agent) => [agent.id, agent.name])),
     [agents],
   );
+  const subagentAgentNames = useMemo(
+    () =>
+      Object.fromEntries(
+        sessions.flatMap((session) => {
+          const agent = session.agent.trim();
+          return agent ? [[session.id, agentNames[agent] || agent]] : [];
+        }),
+      ),
+    [agentNames, sessions],
+  );
   const showMobileList = !isDesktop && !activeId;
 
   return (
@@ -1133,6 +1143,7 @@ export default function ChatApp() {
             title={activeSession?.title || "Untitled"}
             messages={displayMessages}
             agentNames={agentNames}
+            subagentAgentNames={subagentAgentNames}
             agentId={activeSession?.agent ?? ""}
             agents={agents}
             agentBusy={switchingAgent}

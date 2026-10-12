@@ -225,9 +225,11 @@ function isToolOnlyAssistant(message: MessageVM): message is ToolOnlyMessage {
 
 function ActivitySummary({
   messages,
+  subagentAgentNames,
   onOpenSession,
 }: {
   messages: ToolOnlyMessage[];
+  subagentAgentNames: Record<string, string>;
   onOpenSession?: (id: string) => void;
 }) {
   const tools = messages.flatMap((message) =>
@@ -281,15 +283,38 @@ function ActivitySummary({
       <Stack component="ul" spacing={0} sx={{ listStyle: "none", m: 0, p: 0.5 }}>
         {tools.map((tool) => {
           const taskName = tool.name || "Tool";
+          const subagentAgentIdentity = tool.subagentSessionID
+            ? subagentAgentNames[tool.subagentSessionID]
+            : undefined;
+          const subagentAgent = tool.subagentSessionID
+            ? subagentAgentIdentity || "subagent"
+            : undefined;
           const taskLabel = (
-            <>
-              <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+            <Stack direction="row" sx={{ alignItems: "center", flex: 1, minWidth: 0, gap: 0.75 }}>
+              <Typography variant="body2" sx={{ fontWeight: 500, flex: 1, minWidth: 0 }} noWrap>
                 {taskName}
               </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
-                {readableToolStatus(tool.status)}
-              </Typography>
-            </>
+              {subagentAgent && (
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={subagentAgent}
+                  title={subagentAgentIdentity ? `Subagent agent: ${subagentAgentIdentity}` : "Subagent identity unavailable"}
+                  aria-label={subagentAgentIdentity ? `Subagent agent: ${subagentAgentIdentity}` : "Subagent identity unavailable"}
+                  sx={{
+                    height: 22,
+                    maxWidth: 160,
+                    flexShrink: 0,
+                    "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis", px: 0.75 },
+                  }}
+                />
+              )}
+            </Stack>
+          );
+          const statusLabel = (
+            <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+              {readableToolStatus(tool.status)}
+            </Typography>
           );
           return (
             <Box
@@ -302,15 +327,17 @@ function ActivitySummary({
                   variant="text"
                   color="inherit"
                   onClick={() => onOpenSession(tool.subagentSessionID!)}
-                  aria-label={`Open ${taskName} subagent session`}
+                  aria-label={`Open ${taskName}${subagentAgentIdentity ? ` in ${subagentAgentIdentity}` : ""} subagent session`}
                   sx={{ minHeight: 44, justifyContent: "space-between", gap: 1, px: 1, textTransform: "none" }}
                 >
                   {taskLabel}
+                  {statusLabel}
                   <ChevronRight aria-hidden="true" sx={{ flexShrink: 0 }} />
                 </Button>
               ) : (
                 <Stack direction="row" sx={{ minHeight: 44, alignItems: "center", justifyContent: "space-between", gap: 1 }}>
                   {taskLabel}
+                  {statusLabel}
                 </Stack>
               )}
               {tool.status === "error" && tool.error && (
@@ -353,6 +380,7 @@ interface ChatViewProps {
   title: string;
   messages: MessageVM[];
   agentNames: Record<string, string>;
+  subagentAgentNames: Record<string, string>;
   toolRunningCount: number;
   loading: boolean;
   hasOlderMessages: boolean;
@@ -373,6 +401,7 @@ export default function ChatView({
   title,
   messages,
   agentNames,
+  subagentAgentNames,
   toolRunningCount,
   loading,
   hasOlderMessages,
@@ -652,6 +681,7 @@ export default function ChatView({
               <ActivitySummary
                 key={row.key}
                 messages={row.messages}
+                subagentAgentNames={subagentAgentNames}
                 onOpenSession={onOpenSession}
               />
             ) : row.message.kind === "agent" ? (
