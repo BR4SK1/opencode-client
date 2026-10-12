@@ -225,10 +225,12 @@ function isToolOnlyAssistant(message: MessageVM): message is ToolOnlyMessage {
 
 function ActivitySummary({
   messages,
+  agentNames,
   subagentAgentNames,
   onOpenSession,
 }: {
   messages: ToolOnlyMessage[];
+  agentNames: Record<string, string>;
   subagentAgentNames: Record<string, string>;
   onOpenSession?: (id: string) => void;
 }) {
@@ -283,10 +285,13 @@ function ActivitySummary({
       <Stack component="ul" spacing={0} sx={{ listStyle: "none", m: 0, p: 0.5 }}>
         {tools.map((tool) => {
           const taskName = tool.name || "Tool";
-          const subagentAgentIdentity = tool.subagentSessionID
-            ? subagentAgentNames[tool.subagentSessionID]
-            : undefined;
-          const subagentAgent = tool.subagentSessionID
+          const subagentAgentIdentity = tool.subagentAgentID
+            ? agentNames[tool.subagentAgentID] || tool.subagentAgentID
+            : tool.subagentSessionID
+              ? subagentAgentNames[tool.subagentSessionID]
+              : undefined;
+          const isSubagent = tool.name === "subagent" || Boolean(tool.subagentSessionID);
+          const subagentAgent = isSubagent
             ? subagentAgentIdentity || "subagent"
             : undefined;
           const taskLabel = (
@@ -681,6 +686,7 @@ export default function ChatView({
               <ActivitySummary
                 key={row.key}
                 messages={row.messages}
+                agentNames={agentNames}
                 subagentAgentNames={subagentAgentNames}
                 onOpenSession={onOpenSession}
               />

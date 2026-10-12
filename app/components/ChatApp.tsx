@@ -46,6 +46,7 @@ export type PartVM =
       name: string;
       status: string;
       subagentSessionID?: string;
+      subagentAgentID?: string;
       error?: string;
     };
 
@@ -111,7 +112,7 @@ interface RawPart {
   text?: unknown;
   id?: unknown;
   name?: unknown;
-  state?: { status?: unknown; metadata?: unknown; error?: unknown };
+  state?: { status?: unknown; input?: unknown; metadata?: unknown; error?: unknown };
 }
 
 interface RawMessage {
@@ -237,6 +238,7 @@ function buildVMs(data: unknown): MessageVM[] {
         if (p.type === "text" && typeof p.text === "string") {
           parts.push({ kind: "text", text: p.text });
         } else if (p.type === "tool") {
+          const input = asRecord(p.state?.input);
           const metadata = asRecord(asRecord(p.state).metadata);
           parts.push({
             kind: "tool",
@@ -244,6 +246,12 @@ function buildVMs(data: unknown): MessageVM[] {
             name: str(p.name) || "tool",
             status: str(p.state?.status) || "running",
             subagentSessionID: str(metadata.sessionID) || undefined,
+            // The subagent tool input is the immediate, authoritative agent
+            // choice. Child sessions may not yet be present in /api/sessions
+            // when the tool result is rendered, so don't depend on that list
+            // to identify the agent.
+            subagentAgentID:
+              p.name === "subagent" ? str(input.agent) || undefined : undefined,
             error: str(asRecord(p.state?.error).message) || undefined,
           });
         }
