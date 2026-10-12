@@ -31,6 +31,8 @@ export interface SessionVM {
   model?: ModelRef;
 }
 
+export type SessionListStatus = "running" | "waiting";
+
 interface AgentOptionVM {
   id: string;
   name: string;
@@ -312,6 +314,7 @@ export default function ChatApp() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [history, setHistory] = useState<MessageVM[]>([]);
   const [streaming, setStreaming] = useState<Map<string, StreamingVM>>(new Map());
+  const [sessionActivity, setSessionActivity] = useState<Map<string, "running">>(new Map());
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [toolRunningCount, setToolRunningCount] = useState(0);
@@ -788,6 +791,22 @@ export default function ChatApp() {
       const d = asRecord(rec.data);
       const eventTime = Number(rec.created) || Date.now();
       switch (type) {
+        case "session.status": {
+          const sid = str(d.sessionID);
+          const status = asRecord(d.status);
+          if (sid) {
+            setSessionActivity((previous) => {
+              const next = new Map(previous);
+              if (status.type === "busy" || status.type === "retry") {
+                next.set(sid, "running");
+              } else if (status.type === "idle") {
+                next.delete(sid);
+              }
+              return next;
+            });
+          }
+          break;
+        }
         case "permission.asked":
           if (str(d.sessionID) === activeIdRef.current) {
             const permission: PendingPermission = {
@@ -932,6 +951,9 @@ export default function ChatApp() {
           break;
         }
         case "session.text.started":
+          if (str(d.sessionID)) {
+            setSessionActivity((previous) => new Map(previous).set(str(d.sessionID), "running"));
+          }
           if (str(d.sessionID) === activeIdRef.current) {
             const mid = str(d.assistantMessageID);
             if (!mid) break;
@@ -987,6 +1009,13 @@ export default function ChatApp() {
           }
           break;
         case "session.idle":
+          if (str(d.sessionID)) {
+            setSessionActivity((previous) => {
+              const next = new Map(previous);
+              next.delete(str(d.sessionID));
+              return next;
+            });
+          }
           if (str(d.sessionID) === activeIdRef.current) {
             if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
             idleTimerRef.current = setTimeout(() => {
@@ -998,6 +1027,9 @@ export default function ChatApp() {
         case "session.tool.called":
         case "session.tool.success":
         case "session.tool.failed":
+          if (type === "session.tool.called" && str(d.sessionID)) {
+            setSessionActivity((previous) => new Map(previous).set(str(d.sessionID), "running"));
+          }
           if (str(d.sessionID) === activeIdRef.current) {
             setToolRunningCount((c) =>
               Math.max(0, type === "session.tool.called" ? c + 1 : c - 1),
@@ -1012,6 +1044,10 @@ export default function ChatApp() {
           void refetchSessions();
           break;
         case "server.connected":
+          // The API exposes pending requests but no snapshot of in-flight runs.
+          // Drop potentially stale activity from before reconnect and rebuild it
+          // from subsequent global status/activity events.
+          setSessionActivity(new Map());
           void resyncPendingPermission();
           void resyncPendingForms();
           void resyncPendingQuestions();
@@ -1083,6 +1119,15 @@ export default function ChatApp() {
     return counts;
   }, [otherPending, pendingForms, pendingQuestions]);
 
+  const sessionStatuses = useMemo(() => {
+    const statuses = new Map<string, SessionListStatus>(sessionActivity);
+    for (const pending of otherPending) statuses.set(pending.sessionID, "waiting");
+    for (const form of pendingForms) statuses.set(form.sessionID, "waiting");
+    for (const question of pendingQuestions) statuses.set(question.sessionID, "waiting");
+    if (activeId && pendingPermissions.length > 0) statuses.set(activeId, "waiting");
+    return statuses;
+  }, [activeId, otherPending, pendingForms, pendingPermissions, pendingQuestions, sessionActivity]);
+
   const displayMessages = useMemo(
     () => withStreamingMessages(history, streaming),
     [history, streaming],
@@ -1124,6 +1169,7 @@ export default function ChatApp() {
           <SessionList
             variant="desktop"
             sessions={sessions}
+            sessionStatuses={sessionStatuses}
             pendingCounts={pendingCounts}
             activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
@@ -1138,6 +1184,7 @@ export default function ChatApp() {
           <SessionList
             variant="mobile"
             sessions={sessions}
+            sessionStatuses={sessionStatuses}
             pendingCounts={pendingCounts}
             activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
@@ -1157,6 +1204,7 @@ export default function ChatApp() {
             agentBusy={switchingAgent}
             onSwitchAgent={(agentID) => void switchAgent(agentID)}
             toolRunningCount={toolRunningCount}
+            sessionWorking={sessionStatuses.get(activeId) === "running"}
             loading={loadingMessages}
             hasOlderMessages={olderCursor !== null}
             loadingOlderMessages={loadingOlderMessages}
