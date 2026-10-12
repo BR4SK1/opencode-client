@@ -18,9 +18,30 @@ import {
   Toolbar,
   Typography,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
+import type { Theme } from "@mui/material/styles";
 import { useMemo, useState } from "react";
-import type { SessionVM } from "./ChatApp";
+import type { SessionListStatus, SessionVM } from "./ChatApp";
 import { ThemeToggle } from "./ThemeToggle";
+
+function statusRowSx(status: SessionListStatus) {
+  return (theme: Theme) => {
+    const color = status === "running" ? theme.palette.success.main : theme.palette.warning.main;
+    const baseAlpha = theme.palette.mode === "dark" ? 0.2 : 0.1;
+    return {
+      backgroundColor: alpha(color, baseAlpha),
+      "&:hover": {
+        backgroundColor: alpha(color, baseAlpha + 0.06),
+      },
+      "&.Mui-selected": {
+        backgroundColor: alpha(color, baseAlpha + 0.08),
+      },
+      "&.Mui-selected:hover": {
+        backgroundColor: alpha(color, baseAlpha + 0.13),
+      },
+    };
+  };
+}
 
 function relativeTime(ts: number): string {
   const millis = ts < 1e12 ? ts * 1000 : ts;
@@ -37,6 +58,7 @@ function relativeTime(ts: number): string {
 interface SessionListProps {
   variant: "mobile" | "desktop";
   sessions: SessionVM[];
+  sessionStatuses: Map<string, SessionListStatus>;
   pendingCounts: Map<string, number>;
   activeId?: string;
   onOpen: (id: string) => void;
@@ -47,6 +69,7 @@ interface SessionListProps {
 export default function SessionList({
   variant,
   sessions,
+  sessionStatuses,
   pendingCounts,
   activeId,
   onOpen,
@@ -147,6 +170,13 @@ export default function SessionList({
           {roots.map((s) => {
             const children = childrenByParent.get(s.id);
             const expanded = open.has(s.id);
+            const status = sessionStatuses.get(s.id);
+            const statusLabel =
+              status === "running"
+                ? "Processing"
+                : status === "waiting"
+                  ? "Needs input"
+                  : undefined;
             const badgeCount =
               (pendingCounts.get(s.id) ?? 0) +
               (children ?? []).reduce(
@@ -158,7 +188,13 @@ export default function SessionList({
                 <ListItemButton
                   onClick={() => onOpen(s.id)}
                   selected={s.id === activeId}
-                  sx={{ minHeight: 56 }}
+                  aria-label={`${s.title || "Untitled"}${statusLabel ? ` — ${statusLabel}` : ""}`}
+                  title={
+                    statusLabel
+                      ? `${s.title || "Untitled"} — ${statusLabel}`
+                      : s.title || "Untitled"
+                  }
+                  sx={[{ minHeight: 56 }, ...(status ? [statusRowSx(status)] : [])]}
                 >
                   <ListItemText
                     primary={
@@ -184,9 +220,31 @@ export default function SessionList({
                       </Box>
                     }
                     secondary={
-                      <Typography variant="caption" color="text.secondary">
-                        {relativeTime(s.updated)}
-                      </Typography>
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                        <Typography variant="caption" color="text.secondary">
+                          {relativeTime(s.updated)}
+                        </Typography>
+                        {statusLabel && (
+                          <Typography
+                            variant="caption"
+                            sx={{
+                              fontWeight: 600,
+                              color: (theme) => {
+                                if (status === "running") {
+                                  return theme.palette.mode === "dark"
+                                    ? "success.light"
+                                    : "success.dark";
+                                }
+                                return theme.palette.mode === "dark"
+                                  ? "warning.light"
+                                  : "warning.dark";
+                              },
+                            }}
+                          >
+                            {statusLabel}
+                          </Typography>
+                        )}
+                      </Box>
                     }
                   />
                 </ListItemButton>
@@ -227,12 +285,25 @@ export default function SessionList({
                       <List disablePadding>
                         {children.map((c) => {
                           const childBadgeCount = pendingCounts.get(c.id) ?? 0;
+                          const childStatus = sessionStatuses.get(c.id);
+                          const childStatusLabel =
+                            childStatus === "running"
+                              ? "Processing"
+                              : childStatus === "waiting"
+                                ? "Needs input"
+                                : undefined;
                           return (
                             <ListItemButton
                               key={c.id}
                               onClick={() => onOpen(c.id)}
                               selected={c.id === activeId}
-                              sx={{ minHeight: 44, pl: 5 }}
+                              aria-label={`${c.title || "Untitled"}${childStatusLabel ? ` — ${childStatusLabel}` : ""}`}
+                              title={
+                                childStatusLabel
+                                  ? `${c.title || "Untitled"} — ${childStatusLabel}`
+                                  : c.title || "Untitled"
+                              }
+                              sx={[{ minHeight: 44, pl: 5 }, ...(childStatus ? [statusRowSx(childStatus)] : [])]}
                             >
                               <ListItemText
                                 primary={
@@ -267,12 +338,31 @@ export default function SessionList({
                                   </Box>
                                 }
                                 secondary={
-                                  <Typography
-                                    variant="caption"
-                                    color="text.secondary"
-                                  >
-                                    {relativeTime(c.updated)}
-                                  </Typography>
+                                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                                    <Typography variant="caption" color="text.secondary">
+                                      {relativeTime(c.updated)}
+                                    </Typography>
+                                    {childStatusLabel && (
+                                      <Typography
+                                        variant="caption"
+                                        sx={{
+                                          fontWeight: 600,
+                                          color: (theme) => {
+                                            if (childStatus === "running") {
+                                              return theme.palette.mode === "dark"
+                                                ? "success.light"
+                                                : "success.dark";
+                                            }
+                                            return theme.palette.mode === "dark"
+                                              ? "warning.light"
+                                              : "warning.dark";
+                                          },
+                                        }}
+                                      >
+                                        {childStatusLabel}
+                                      </Typography>
+                                    )}
+                                  </Box>
                                 }
                               />
                             </ListItemButton>

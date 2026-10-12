@@ -333,7 +333,7 @@ function ActivitySummary({
                   color="inherit"
                   onClick={() => onOpenSession(tool.subagentSessionID!)}
                   aria-label={`Open ${taskName}${subagentAgentIdentity ? ` in ${subagentAgentIdentity}` : ""} subagent session`}
-                  sx={{ minHeight: 44, justifyContent: "space-between", gap: 1, px: 1, textTransform: "none" }}
+                  sx={{ minHeight: 44, justifyContent: "space-between", gap: 1, px: 0, textTransform: "none" }}
                 >
                   {taskLabel}
                   {statusLabel}
@@ -387,6 +387,7 @@ interface ChatViewProps {
   agentNames: Record<string, string>;
   subagentAgentNames: Record<string, string>;
   toolRunningCount: number;
+  sessionWorking: boolean;
   loading: boolean;
   hasOlderMessages: boolean;
   loadingOlderMessages: boolean;
@@ -408,6 +409,7 @@ export default function ChatView({
   agentNames,
   subagentAgentNames,
   toolRunningCount,
+  sessionWorking,
   loading,
   hasOlderMessages,
   loadingOlderMessages,
@@ -749,19 +751,6 @@ export default function ChatView({
             ),
           )}
 
-          {toolRunningCount > 0 && (
-            <Stack
-              direction="row"
-              spacing={1}
-              sx={{ alignItems: "center" }}
-            >
-              <LinearProgress sx={{ width: 160 }} />
-              <Typography variant="caption" color="text.secondary" noWrap>
-                Tool running…
-              </Typography>
-            </Stack>
-          )}
-
         </Box>
       </Box>
 
@@ -775,8 +764,22 @@ export default function ChatView({
           display: "flex",
           alignItems: "flex-end",
           gap: 1,
+          position: "relative",
         }}
       >
+        {sessionWorking && (
+          <LinearProgress
+            variant="indeterminate"
+            aria-label="Assistant is working"
+            sx={{
+              position: "absolute",
+              top: -2,
+              left: 0,
+              right: 0,
+              height: 2,
+            }}
+          />
+        )}
         <TextField
           multiline
           maxRows={4}
