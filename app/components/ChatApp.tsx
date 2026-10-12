@@ -40,7 +40,14 @@ interface AgentOptionVM {
 
 export type PartVM =
   | { kind: "text"; text: string }
-  | { kind: "tool"; id: string; name: string; status: string; subagentSessionID?: string };
+  | {
+      kind: "tool";
+      id: string;
+      name: string;
+      status: string;
+      subagentSessionID?: string;
+      error?: string;
+    };
 
 export type MessageVM =
   | {
@@ -104,7 +111,7 @@ interface RawPart {
   text?: unknown;
   id?: unknown;
   name?: unknown;
-  state?: { status?: unknown; metadata?: unknown };
+  state?: { status?: unknown; metadata?: unknown; error?: unknown };
 }
 
 interface RawMessage {
@@ -237,6 +244,7 @@ function buildVMs(data: unknown): MessageVM[] {
             name: str(p.name) || "tool",
             status: str(p.state?.status) || "running",
             subagentSessionID: str(metadata.sessionID) || undefined,
+            error: str(asRecord(p.state?.error).message) || undefined,
           });
         }
         // reasoning parts are skipped in the MVP

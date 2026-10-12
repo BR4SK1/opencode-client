@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Close from "@mui/icons-material/Close";
+import ExpandMore from "@mui/icons-material/ExpandMore";
 import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
@@ -39,7 +40,14 @@ import { CodeBlock, InlineCode, parseSegments } from "./CodeBlock";
 function toolChipIcon(status: string): string {
   if (status === "completed") return "✓";
   if (status === "error") return "✕";
-  return "•";
+  return "↻";
+}
+
+function readableToolStatus(status: string): string {
+  if (status === "completed") return "Completed";
+  if (status === "error") return "Failed";
+  if (status === "streaming") return "Starting";
+  return "Running";
 }
 
 /** HH:MM in the user's locale; tolerates second- and millisecond-epochs. */
@@ -204,6 +212,143 @@ function ToolParts({
   );
 }
 
+type ToolPartVM = Extract<PartVM, { kind: "tool" }>;
+type ToolOnlyMessage = Extract<MessageVM, { kind: "assistant" }>;
+
+function isToolOnlyAssistant(message: MessageVM): message is ToolOnlyMessage {
+  return (
+    message.kind === "assistant" &&
+    message.parts.some((part) => part.kind === "tool") &&
+    !message.parts.some((part) => part.kind === "text" && part.text.trim())
+  );
+}
+
+function ActivitySummary({
+  messages,
+  onOpenSession,
+}: {
+  messages: ToolOnlyMessage[];
+  onOpenSession?: (id: string) => void;
+}) {
+  const tools = messages.flatMap((message) =>
+    message.parts.filter((part): part is ToolPartVM => part.kind === "tool"),
+  );
+  const counts = tools.reduce<Record<string, number>>((result, tool) => {
+    const status = readableToolStatus(tool.status);
+    result[status] = (result[status] ?? 0) + 1;
+    return result;
+  }, {});
+  const statusSummary = Object.entries(counts)
+    .map(([status, count]) => `${count} ${status.toLowerCase()}`)
+    .join(" · ");
+
+  return (
+    <Box
+      component="details"
+      sx={{
+        width: "100%",
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 2,
+        overflow: "hidden",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Box
+        component="summary"
+        sx={{
+          minHeight: 48,
+          px: 1.5,
+          display: "flex",
+          flexWrap: "wrap",
+          alignItems: "center",
+          gap: 1,
+          cursor: "pointer",
+          listStylePosition: "inside",
+          "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" },
+          "details[open] & .MuiSvgIcon-root": { transform: "rotate(180deg)" },
+        }}
+      >
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          Activity · {tools.length} {tools.length === 1 ? "task" : "tasks"}
+        </Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
+          {statusSummary}
+        </Typography>
+        <ExpandMore sx={{ transition: (theme) => theme.transitions.create("transform") }} />
+      </Box>
+      <Divider />
+      <Stack component="ul" spacing={0} sx={{ listStyle: "none", m: 0, p: 0.5 }}>
+        {tools.map((tool) => {
+          const taskName = tool.name || "Tool";
+          const taskLabel = (
+            <>
+              <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
+                {taskName}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ flexShrink: 0 }}>
+                {readableToolStatus(tool.status)}
+              </Typography>
+            </>
+          );
+          return (
+            <Box
+              component="li"
+              key={tool.id}
+              sx={{ px: 1, py: 0.25, minHeight: 44, display: "flex", flexDirection: "column", justifyContent: "center" }}
+            >
+              {tool.subagentSessionID && onOpenSession ? (
+                <Button
+                  variant="text"
+                  color="inherit"
+                  onClick={() => onOpenSession(tool.subagentSessionID!)}
+                  aria-label={`Open ${taskName} subagent session`}
+                  sx={{ minHeight: 44, justifyContent: "space-between", gap: 1, px: 1, textTransform: "none" }}
+                >
+                  {taskLabel}
+                  <ChevronRight aria-hidden="true" sx={{ flexShrink: 0 }} />
+                </Button>
+              ) : (
+                <Stack direction="row" sx={{ minHeight: 44, alignItems: "center", justifyContent: "space-between", gap: 1 }}>
+                  {taskLabel}
+                </Stack>
+              )}
+              {tool.status === "error" && tool.error && (
+                <Typography variant="caption" color="error.main" sx={{ px: 1, pb: 0.5, overflowWrap: "anywhere" }}>
+                  {tool.error}
+                </Typography>
+              )}
+            </Box>
+          );
+        })}
+      </Stack>
+    </Box>
+  );
+}
+
+type MessageRow =
+  | { kind: "message"; key: string; message: MessageVM }
+  | { kind: "activity"; key: string; messages: ToolOnlyMessage[] };
+
+function groupToolOnlyMessages(messages: MessageVM[]): MessageRow[] {
+  const rows: MessageRow[] = [];
+  for (let index = 0; index < messages.length; ) {
+    const message = messages[index];
+    if (isToolOnlyAssistant(message)) {
+      const group: ToolOnlyMessage[] = [];
+      while (index < messages.length && isToolOnlyAssistant(messages[index])) {
+        group.push(messages[index] as ToolOnlyMessage);
+        index += 1;
+      }
+      rows.push({ kind: "activity", key: `activity-${group[0].id}`, messages: group });
+    } else {
+      rows.push({ kind: "message", key: message.id, message });
+      index += 1;
+    }
+  }
+  return rows;
+}
+
 interface ChatViewProps {
   title: string;
   messages: MessageVM[];
@@ -312,6 +457,8 @@ export default function ChatView({
     if (!loaded) scrollAnchorRef.current = null;
   };
 
+  const rows = groupToolOnlyMessages(messages);
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
@@ -340,7 +487,7 @@ export default function ChatView({
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
-          <Box sx={{ flexShrink: 0, width: { xs: 116, sm: 148, md: 180 }, mx: { xs: 0.5, sm: 1 } }}>
+          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 180, mx: 1 }}>
             <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
               <Select
                 value={agentId || ""}
@@ -410,6 +557,44 @@ export default function ChatView({
           </IconButton>
         </Stack>
         <Divider />
+        <Box sx={{ px: 2, py: 1.5 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Agent
+          </Typography>
+          <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+            <Select
+              value={agentId || ""}
+              onChange={(event) => onSwitchAgent(event.target.value)}
+              displayEmpty
+              inputProps={{ "aria-label": "Select agent" }}
+            >
+              {!agentId && (
+                <MenuItem value="" disabled>
+                  {agentBusy ? "Loading agent…" : "Select agent"}
+                </MenuItem>
+              )}
+              {!agents.some((agent) => agent.id === agentId) && agentId && (
+                <MenuItem value={agentId} disabled>
+                  Unavailable: {agentId}
+                </MenuItem>
+              )}
+              {agents.map((agent) => (
+                <MenuItem key={agent.id} value={agent.id} title={agent.description}>
+                  {agent.name || agent.id}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {agentBusy && (
+            <Stack direction="row" spacing={1} role="status" aria-live="polite" sx={{ alignItems: "center", mt: 1 }}>
+              <CircularProgress size={16} />
+              <Typography variant="caption" color="text.secondary">
+                Switching agent…
+              </Typography>
+            </Stack>
+          )}
+        </Box>
+        <Divider />
         <List>
           <ListItemButton
             onClick={() => {
@@ -462,18 +647,24 @@ export default function ChatView({
               Load older messages
             </Button>
           )}
-          {messages.map((m) =>
-            m.kind === "agent" ? (
+          {rows.map((row) =>
+            row.kind === "activity" ? (
+              <ActivitySummary
+                key={row.key}
+                messages={row.messages}
+                onOpenSession={onOpenSession}
+              />
+            ) : row.message.kind === "agent" ? (
               <Typography
-                key={`agent-${m.id}`}
+                key={`agent-${row.message.id}`}
                 variant="caption"
                 color="text.secondary"
                 sx={{ alignSelf: "center", py: 0.5 }}
               >
-                Agent switched{m.previous ? ` from ${agentNames[m.previous] || m.previous}` : ""} to {agentNames[m.agent] || m.agent}
+                Agent switched{row.message.previous ? ` from ${agentNames[row.message.previous] || row.message.previous}` : ""} to {agentNames[row.message.agent] || row.message.agent}
               </Typography>
-            ) : m.kind === "user" ? (
-              <Stack key={m.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
+            ) : row.message.kind === "user" ? (
+              <Stack key={row.message.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
                 <Paper
                   sx={{
                     maxWidth: "85%",
@@ -486,37 +677,37 @@ export default function ChatView({
                   }}
                 >
                   <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                    {m.text}
+                    {row.message.text}
                   </Typography>
                 </Paper>
-                {m.time !== undefined && (
+                {row.message.time !== undefined && (
                   <Typography variant="caption" sx={{ color: "text.secondary", fontSize: 11 }}>
-                    {formatTime(m.time)}
+                    {formatTime(row.message.time)}
                   </Typography>
                 )}
               </Stack>
             ) : (
-              <Stack key={m.id} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
+              <Stack key={row.message.id} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
                 <AssistantHeader
-                  time={m.time}
-                  agent={m.agent ? agentNames[m.agent] || m.agent : undefined}
+                  time={row.message.time}
+                  agent={row.message.agent ? agentNames[row.message.agent] || row.message.agent : undefined}
                 />
                 <AssistantBubble>
-                  {m.parts
+                  {row.message.parts
                     .filter((p): p is Extract<PartVM, { kind: "text" }> => p.kind === "text")
                     .map((p, i, textParts) => (
                       <SegmentedText
                         key={i}
                         text={p.text}
-                        caret={m.streaming && i === textParts.length - 1}
+                        caret={row.message.kind === "assistant" && row.message.streaming && i === textParts.length - 1}
                       />
                     ))}
-                  {m.streaming && !m.parts.some((p) => p.kind === "text") && (
+                  {row.message.streaming && !row.message.parts.some((p) => p.kind === "text") && (
                     <Typography variant="body1" color="text.secondary">
                       ···
                     </Typography>
                   )}
-                  <ToolParts parts={m.parts} onOpenSession={onOpenSession} />
+                  <ToolParts parts={row.message.parts} onOpenSession={onOpenSession} />
                 </AssistantBubble>
               </Stack>
             ),
