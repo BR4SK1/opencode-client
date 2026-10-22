@@ -9,6 +9,7 @@ import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
 import SmartToy from "@mui/icons-material/SmartToy";
+import type { ModelRef } from "@opencode/client";
 import {
   AppBar,
   Avatar,
@@ -395,7 +396,11 @@ interface ChatViewProps {
   agentId: string;
   agents: Array<{ id: string; name: string; description: string }>;
   agentBusy: boolean;
+  model?: ModelRef;
+  models: Array<{ model: ModelRef; label: string }>;
+  modelBusy: boolean;
   onSwitchAgent: (agentID: string) => void;
+  onSwitchModel: (model: ModelRef) => void;
   onSend: (text: string) => Promise<boolean>;
   onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
@@ -417,7 +422,11 @@ export default function ChatView({
   agentId,
   agents,
   agentBusy,
+  model,
+  models,
+  modelBusy,
   onSwitchAgent,
+  onSwitchModel,
   onSend,
   onLoadOlder,
   onBack,
@@ -494,6 +503,23 @@ export default function ChatView({
   };
 
   const rows = groupToolOnlyMessages(messages);
+  const modelValue = (value: ModelRef) =>
+    JSON.stringify([value.providerID, value.id, value.variant ?? ""]);
+  const selectedModel = model ? modelValue(model) : "";
+  const selectModel = (value: string) => {
+    try {
+      const [providerID, id, variant] = JSON.parse(value) as [string, string, string];
+      const option = models.find(
+        (item) =>
+          item.model.providerID === providerID &&
+          item.model.id === id &&
+          (item.model.variant ?? "") === variant,
+      );
+      if (option) onSwitchModel(option.model);
+    } catch {
+      // Ignore malformed Select values.
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -523,8 +549,8 @@ export default function ChatView({
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
-          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 180, mx: 1 }}>
-            <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 160, mx: 0.5 }}>
+            <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || agents.length === 0}>
               <Select
                 value={agentId || ""}
                 onChange={(event) => onSwitchAgent(event.target.value)}
@@ -551,6 +577,39 @@ export default function ChatView({
                 {agents.map((agent) => (
                   <MenuItem key={agent.id} value={agent.id} title={agent.description}>
                     {agent.name || agent.id}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 220, mx: 0.5 }}>
+            <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || models.length === 0}>
+              <Select
+                value={selectedModel}
+                onChange={(event) => selectModel(event.target.value)}
+                displayEmpty
+                inputProps={{ "aria-label": "Select model" }}
+                sx={{
+                  "& .MuiSelect-select": {
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  },
+                }}
+              >
+                {!model && (
+                  <MenuItem value="" disabled>
+                    {modelBusy ? "Loading model…" : "Select model"}
+                  </MenuItem>
+                )}
+                {model && !models.some((option) => modelValue(option.model) === selectedModel) && (
+                  <MenuItem value={selectedModel} disabled>
+                    Unavailable: {model.providerID}/{model.id}
+                  </MenuItem>
+                )}
+                {models.map((option) => (
+                  <MenuItem key={modelValue(option.model)} value={modelValue(option.model)} title={option.label}>
+                    {option.label}
                   </MenuItem>
                 ))}
               </Select>
@@ -597,7 +656,7 @@ export default function ChatView({
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Agent
           </Typography>
-          <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+          <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || agents.length === 0}>
             <Select
               value={agentId || ""}
               onChange={(event) => onSwitchAgent(event.target.value)}
@@ -621,11 +680,38 @@ export default function ChatView({
               ))}
             </Select>
           </FormControl>
-          {agentBusy && (
+          <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+            Model
+          </Typography>
+          <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || models.length === 0}>
+            <Select
+              value={selectedModel}
+              onChange={(event) => selectModel(event.target.value)}
+              displayEmpty
+              inputProps={{ "aria-label": "Select model" }}
+            >
+              {!model && (
+                <MenuItem value="" disabled>
+                  {models.length === 0 ? "No models available" : "Select model"}
+                </MenuItem>
+              )}
+              {model && !models.some((option) => modelValue(option.model) === selectedModel) && (
+                <MenuItem value={selectedModel} disabled>
+                  Unavailable: {model.providerID}/{model.id}
+                </MenuItem>
+              )}
+              {models.map((option) => (
+                <MenuItem key={modelValue(option.model)} value={modelValue(option.model)} title={option.label}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {(agentBusy || modelBusy) && (
             <Stack direction="row" spacing={1} role="status" aria-live="polite" sx={{ alignItems: "center", mt: 1 }}>
               <CircularProgress size={16} />
               <Typography variant="caption" color="text.secondary">
-                Switching agent…
+                {agentBusy ? "Switching agent…" : "Switching model…"}
               </Typography>
             </Stack>
           )}

@@ -8,6 +8,12 @@ async function getSessionAgentState(sessionID: string) {
   const result = await opencode.agent.list({
     location: { directory: session.location.directory },
   });
+  const modelResult = await opencode.model
+    .list({ location: { directory: session.location.directory } })
+    .catch((err) => {
+      console.error("opencode model list failed:", err);
+      return null;
+    });
   const agents = result.data
     .filter((agent) => !agent.hidden && agent.mode !== "subagent")
     .map((agent) => ({
@@ -22,6 +28,16 @@ async function getSessionAgentState(sessionID: string) {
     currentAgent: session.agent ?? "",
     model: session.model ?? null,
     agents,
+    models:
+      modelResult?.data
+        .filter((model) => model.enabled)
+        .map((model) => ({
+          id: model.id,
+          providerID: model.providerID,
+          name: model.name,
+          enabled: model.enabled,
+          variants: model.variants.map((variant) => ({ id: variant.id })),
+        })) ?? [],
   };
 }
 

@@ -40,6 +40,11 @@ interface AgentOptionVM {
   model?: ModelRef | null;
 }
 
+interface ModelOptionVM {
+  model: ModelRef;
+  label: string;
+}
+
 export type PartVM =
   | { kind: "text"; text: string }
   | {
@@ -311,6 +316,7 @@ export default function ChatApp() {
 
   const [sessions, setSessions] = useState<SessionVM[]>([]);
   const [agents, setAgents] = useState<AgentOptionVM[]>([]);
+  const [models, setModels] = useState<ModelOptionVM[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [history, setHistory] = useState<MessageVM[]>([]);
   const [streaming, setStreaming] = useState<Map<string, StreamingVM>>(new Map());
@@ -323,6 +329,7 @@ export default function ChatApp() {
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
   const [sending, setSending] = useState(false);
   const [switchingAgent, setSwitchingAgent] = useState(false);
+  const [switchingModel, setSwitchingModel] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
@@ -431,6 +438,29 @@ export default function ChatApp() {
         })
       : [];
     setAgents(availableAgents.filter((agent) => agent.id));
+    const availableModels = Array.isArray(state.models)
+      ? state.models.flatMap((value) => {
+          const info = asRecord(value);
+          const ref = modelRef(info);
+          if (!ref || info.enabled !== true) return [];
+          const name = str(info.name) || ref.id;
+          const base = `${ref.providerID} · ${name}`;
+          const options: ModelOptionVM[] = [{ model: ref, label: base }];
+          if (Array.isArray(info.variants)) {
+            for (const variantValue of info.variants) {
+              const variant = str(asRecord(variantValue).id);
+              if (variant) {
+                options.push({
+                  model: { ...ref, variant },
+                  label: `${base} (${variant})`,
+                });
+              }
+            }
+          }
+          return options;
+        })
+      : [];
+    setModels(availableModels);
     setSessions((previous) =>
       previous.map((session) =>
         session.id === id
@@ -501,6 +531,47 @@ export default function ChatApp() {
       }
     },
     [apiFetch, applyAgentState, fetchAgentState],
+  );
+
+  const switchModel = useCallback(
+    async (model: ModelRef) => {
+      const id = activeIdRef.current;
+      if (!id) return;
+      const generation = sessionGenerationRef.current;
+      setSwitchingModel(true);
+      setError(null);
+      try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/model`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
+        const result = asRecord(await res.json());
+        if (!res.ok) {
+          if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+            await fetchAgentState(id, generation);
+            setError(str(result.error) || "Failed to switch model.");
+          }
+          return;
+        }
+        const selected = modelRef(result.model);
+        if (selected && activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          setSessions((previous) =>
+            previous.map((session) => session.id === id ? { ...session, model: selected } : session),
+          );
+        }
+      } catch {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          await fetchAgentState(id, generation);
+          setError("Failed to switch model.");
+        }
+      } finally {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          setSwitchingModel(false);
+        }
+      }
+    },
+    [apiFetch, fetchAgentState],
   );
 
   const setMessageCursor = useCallback((cursor: string | null) => {
@@ -693,9 +764,11 @@ export default function ChatApp() {
       setLoadingOlderMessages(false);
       setSending(false);
       setSwitchingAgent(false);
+      setSwitchingModel(false);
       setToolRunningCount(0);
       setPendingPermissions([]);
       setAgents([]);
+      setModels([]);
       setLoadingMessages(true);
       void fetchAgentState(id, generation);
       void resyncPendingPermission();
@@ -1248,13 +1321,17 @@ export default function ChatApp() {
             agentId={activeSession?.agent ?? ""}
             agents={agents}
             agentBusy={switchingAgent}
+            model={activeSession?.model}
+            models={models}
+            modelBusy={switchingModel}
             onSwitchAgent={(agentID) => void switchAgent(agentID)}
+            onSwitchModel={(model) => void switchModel(model)}
             toolRunningCount={toolRunningCount}
             sessionWorking={sessionStatuses.get(activeId) === "running"}
             loading={loadingMessages}
             hasOlderMessages={olderCursor !== null}
             loadingOlderMessages={loadingOlderMessages}
-            sending={sending || switchingAgent}
+            sending={sending || switchingAgent || switchingModel}
             onSend={sendPrompt}
             onBack={
               isDesktop
@@ -1265,6 +1342,7 @@ export default function ChatApp() {
                     activeIdRef.current = null;
                     setActiveId(null);
                     setAgents([]);
+                    setModels([]);
                     setPendingPermissions([]);
                   }
             }
