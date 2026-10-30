@@ -2,10 +2,21 @@ import type { Metadata, Viewport } from "next";
 import InitColorSchemeScript from "@mui/material/InitColorSchemeScript";
 import { AppRouterCacheProvider } from "@mui/material-nextjs/v16-appRouter";
 import Providers from "./providers";
+import RegisterServiceWorker from "./components/RegisterServiceWorker";
 
 export const metadata: Metadata = {
   title: "opencode-client",
   description: "Mobile-first chat client for OpenCode",
+  manifest: "/manifest.webmanifest",
+  applicationName: "opencode-client",
+  appleWebApp: {
+    capable: true,
+    title: "opencode-client",
+    // "default" keeps iOS status-bar text readable in both themes and draws
+    // the bar above the content, so no safe-area layout changes are needed.
+    // The bar is tinted by the theme-color <meta> tags in `viewport` below.
+    statusBarStyle: "default",
+  },
 };
 
 export const viewport: Viewport = {
@@ -57,6 +68,7 @@ export default function RootLayout({
         <AppRouterCacheProvider options={{ key: "mui" }}>
           <Providers>{children}</Providers>
         </AppRouterCacheProvider>
+        <RegisterServiceWorker />
       </body>
     </html>
   );
