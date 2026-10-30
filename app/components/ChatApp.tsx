@@ -14,6 +14,14 @@ import {
 } from "@mui/material";
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import type { FormInfo, ModelRef } from "@opencode/client";
+import type { PromptMentionAttachment } from "@/lib/prompt-mentions";
+import {
+  clearComposerDraftIfRevision,
+  getComposerDraft,
+  updateComposerDraft,
+  type ComposerDraftContent,
+  type SessionComposerDrafts,
+} from "@/lib/composer-drafts";
 import { signOut } from "next-auth/react";
 import SessionList from "./SessionList";
 import ChatView from "./ChatView";
@@ -38,6 +46,11 @@ interface AgentOptionVM {
   name: string;
   description: string;
   model?: ModelRef | null;
+}
+
+interface ModelOptionVM {
+  model: ModelRef;
+  label: string;
 }
 
 export type PartVM =
@@ -311,6 +324,7 @@ export default function ChatApp() {
 
   const [sessions, setSessions] = useState<SessionVM[]>([]);
   const [agents, setAgents] = useState<AgentOptionVM[]>([]);
+  const [models, setModels] = useState<ModelOptionVM[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [history, setHistory] = useState<MessageVM[]>([]);
   const [streaming, setStreaming] = useState<Map<string, StreamingVM>>(new Map());
@@ -321,8 +335,10 @@ export default function ChatApp() {
   const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
   const [pendingForms, setPendingForms] = useState<FormInfo[]>([]);
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
-  const [sending, setSending] = useState(false);
+  const [sendingSessionIDs, setSendingSessionIDs] = useState<Set<string>>(() => new Set());
+  const [composerDrafts, setComposerDrafts] = useState<SessionComposerDrafts>(() => new Map());
   const [switchingAgent, setSwitchingAgent] = useState(false);
+  const [switchingModel, setSwitchingModel] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
@@ -332,6 +348,7 @@ export default function ChatApp() {
   const [questionToast, setQuestionToast] = useState<QuestionToast | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
+  const sendingSessionIDsRef = useRef(new Set<string>());
   const sessionGenerationRef = useRef(0);
   const headRequestRef = useRef(0);
   const olderCursorRef = useRef<string | null>(null);
@@ -431,6 +448,29 @@ export default function ChatApp() {
         })
       : [];
     setAgents(availableAgents.filter((agent) => agent.id));
+    const availableModels = Array.isArray(state.models)
+      ? state.models.flatMap((value) => {
+          const info = asRecord(value);
+          const ref = modelRef(info);
+          if (!ref || info.enabled !== true) return [];
+          const name = str(info.name) || ref.id;
+          const base = `${ref.providerID} · ${name}`;
+          const options: ModelOptionVM[] = [{ model: ref, label: base }];
+          if (Array.isArray(info.variants)) {
+            for (const variantValue of info.variants) {
+              const variant = str(asRecord(variantValue).id);
+              if (variant) {
+                options.push({
+                  model: { ...ref, variant },
+                  label: `${base} (${variant})`,
+                });
+              }
+            }
+          }
+          return options;
+        })
+      : [];
+    setModels(availableModels);
     setSessions((previous) =>
       previous.map((session) =>
         session.id === id
@@ -501,6 +541,47 @@ export default function ChatApp() {
       }
     },
     [apiFetch, applyAgentState, fetchAgentState],
+  );
+
+  const switchModel = useCallback(
+    async (model: ModelRef) => {
+      const id = activeIdRef.current;
+      if (!id) return;
+      const generation = sessionGenerationRef.current;
+      setSwitchingModel(true);
+      setError(null);
+      try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/model`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model }),
+        });
+        const result = asRecord(await res.json());
+        if (!res.ok) {
+          if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+            await fetchAgentState(id, generation);
+            setError(str(result.error) || "Failed to switch model.");
+          }
+          return;
+        }
+        const selected = modelRef(result.model);
+        if (selected && activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          setSessions((previous) =>
+            previous.map((session) => session.id === id ? { ...session, model: selected } : session),
+          );
+        }
+      } catch {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          await fetchAgentState(id, generation);
+          setError("Failed to switch model.");
+        }
+      } finally {
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          setSwitchingModel(false);
+        }
+      }
+    },
+    [apiFetch, fetchAgentState],
   );
 
   const setMessageCursor = useCallback((cursor: string | null) => {
@@ -691,11 +772,12 @@ export default function ChatApp() {
       olderPageLoadedRef.current = false;
       setMessageCursor(null);
       setLoadingOlderMessages(false);
-      setSending(false);
       setSwitchingAgent(false);
+      setSwitchingModel(false);
       setToolRunningCount(0);
       setPendingPermissions([]);
       setAgents([]);
+      setModels([]);
       setLoadingMessages(true);
       void fetchAgentState(id, generation);
       void resyncPendingPermission();
@@ -749,10 +831,19 @@ export default function ChatApp() {
     }
   }, [apiFetch, openSession]);
 
+  const persistComposerDraft = useCallback((sessionID: string, draft: ComposerDraftContent) => {
+    setComposerDrafts((current) => updateComposerDraft(current, sessionID, draft));
+  }, []);
+
+  const clearComposerDraft = useCallback((sessionID: string, revision: number) => {
+    setComposerDrafts((current) => clearComposerDraftIfRevision(current, sessionID, revision));
+  }, []);
+
   const sendPrompt = useCallback(
-    async (text: string): Promise<boolean> => {
-      const id = activeIdRef.current;
-      if (!id || !text.trim()) return false;
+    async (sessionID: string, text: string, attachments: PromptMentionAttachment[] = []): Promise<boolean> => {
+      const id = sessionID;
+      if (!id || !text.trim() || sendingSessionIDsRef.current.has(id)) return false;
+      sendingSessionIDsRef.current.add(id);
       const generation = sessionGenerationRef.current;
       const clientMessageID = `tmp-${crypto.randomUUID()}`;
       setHistory((previous) =>
@@ -767,12 +858,12 @@ export default function ChatApp() {
           },
         ]),
       );
-      setSending(true);
+      setSendingSessionIDs((current) => new Set(current).add(id));
       try {
         const res = await apiFetch(`/api/sessions/${id}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, clientMessageID }),
+          body: JSON.stringify({ text, clientMessageID, attachments }),
         });
         if (!res.ok) throw new Error(`prompt failed: ${res.status}`);
         return true;
@@ -794,12 +885,12 @@ export default function ChatApp() {
         }
         return false;
       } finally {
-        if (
-          activeIdRef.current === id &&
-          sessionGenerationRef.current === generation
-        ) {
-          setSending(false);
-        }
+        sendingSessionIDsRef.current.delete(id);
+        setSendingSessionIDs((current) => {
+          const next = new Set(current);
+          next.delete(id);
+          return next;
+        });
       }
     },
     [apiFetch],
@@ -1197,6 +1288,7 @@ export default function ChatApp() {
     [agentNames, sessions],
   );
   const showMobileList = !isDesktop && !activeId;
+  const activeComposerDraft = activeId ? getComposerDraft(composerDrafts, activeId) : undefined;
 
   return (
     <Box sx={{ display: "flex", height: "100dvh", overflow: "hidden" }}>
@@ -1241,6 +1333,11 @@ export default function ChatApp() {
       ) : activeId ? (
         <Box sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <ChatView
+            key={activeId}
+            sessionID={activeId}
+            draft={activeComposerDraft!}
+            onDraftChange={persistComposerDraft}
+            onClearDraft={clearComposerDraft}
             title={activeSession?.title || "Untitled"}
             messages={displayMessages}
             agentNames={agentNames}
@@ -1248,13 +1345,17 @@ export default function ChatApp() {
             agentId={activeSession?.agent ?? ""}
             agents={agents}
             agentBusy={switchingAgent}
+            model={activeSession?.model}
+            models={models}
+            modelBusy={switchingModel}
             onSwitchAgent={(agentID) => void switchAgent(agentID)}
+            onSwitchModel={(model) => void switchModel(model)}
             toolRunningCount={toolRunningCount}
             sessionWorking={sessionStatuses.get(activeId) === "running"}
             loading={loadingMessages}
             hasOlderMessages={olderCursor !== null}
             loadingOlderMessages={loadingOlderMessages}
-            sending={sending || switchingAgent}
+            sending={sendingSessionIDs.has(activeId) || switchingAgent || switchingModel}
             onSend={sendPrompt}
             onBack={
               isDesktop
@@ -1265,6 +1366,7 @@ export default function ChatApp() {
                     activeIdRef.current = null;
                     setActiveId(null);
                     setAgents([]);
+                    setModels([]);
                     setPendingPermissions([]);
                   }
             }

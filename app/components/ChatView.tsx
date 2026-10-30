@@ -9,6 +9,27 @@ import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
 import SmartToy from "@mui/icons-material/SmartToy";
+import InsertDriveFileOutlined from "@mui/icons-material/InsertDriveFileOutlined";
+import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
+import LibraryBooksOutlined from "@mui/icons-material/LibraryBooksOutlined";
+import type { ModelRef } from "@opencode/client";
+import {
+  trackMentionEdits,
+  findActiveMentionQuery,
+  type ActiveMentionQuery,
+  type MentionCandidate,
+  type MentionDescriptor,
+  type PromptMentionAttachment,
+} from "@/lib/prompt-mentions";
+import {
+  isSameDismissedMention,
+  prepareComposerDraftSubmission,
+  removeComposerMention,
+  shouldBlockEnterDuringMentionSearch,
+  type ComposerDraft,
+  type ComposerDraftContent,
+  type ComposerDraftMention,
+} from "@/lib/composer-drafts";
 import {
   AppBar,
   Avatar,
@@ -381,7 +402,17 @@ function groupToolOnlyMessages(messages: MessageVM[]): MessageRow[] {
   return rows;
 }
 
+function candidateIcon(kind: MentionCandidate["kind"]) {
+  if (kind === "directory") return <FolderOpenOutlined fontSize="small" />;
+  if (kind === "reference") return <LibraryBooksOutlined fontSize="small" />;
+  return <InsertDriveFileOutlined fontSize="small" />;
+}
+
 interface ChatViewProps {
+  sessionID: string;
+  draft: ComposerDraft;
+  onDraftChange: (sessionID: string, draft: ComposerDraftContent) => void;
+  onClearDraft: (sessionID: string, revision: number) => void;
   title: string;
   messages: MessageVM[];
   agentNames: Record<string, string>;
@@ -395,8 +426,12 @@ interface ChatViewProps {
   agentId: string;
   agents: Array<{ id: string; name: string; description: string }>;
   agentBusy: boolean;
+  model?: ModelRef;
+  models: Array<{ model: ModelRef; label: string }>;
+  modelBusy: boolean;
   onSwitchAgent: (agentID: string) => void;
-  onSend: (text: string) => Promise<boolean>;
+  onSwitchModel: (model: ModelRef) => void;
+  onSend: (sessionID: string, text: string, attachments: PromptMentionAttachment[]) => Promise<boolean>;
   onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
   onRefresh: () => void;
@@ -404,6 +439,10 @@ interface ChatViewProps {
 }
 
 export default function ChatView({
+  sessionID,
+  draft,
+  onDraftChange,
+  onClearDraft,
   title,
   messages,
   agentNames,
@@ -417,15 +456,34 @@ export default function ChatView({
   agentId,
   agents,
   agentBusy,
+  model,
+  models,
+  modelBusy,
   onSwitchAgent,
+  onSwitchModel,
   onSend,
   onLoadOlder,
   onBack,
   onRefresh,
   onOpenSession,
 }: ChatViewProps) {
-  const [text, setText] = useState("");
+  const draftRef = useRef({ sessionID, draft });
+  useLayoutEffect(() => {
+    if (draftRef.current.sessionID !== sessionID || draft.revision >= draftRef.current.draft.revision) {
+      draftRef.current = { sessionID, draft };
+    }
+  }, [sessionID, draft]);
+  const text = draft.text;
+  const mentions = draft.mentions;
+  const [activeMention, setActiveMention] = useState<ActiveMentionQuery | null>(null);
+  const [candidates, setCandidates] = useState<MentionCandidate[]>([]);
+  const [mentionState, setMentionState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [activeCandidate, setActiveCandidate] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [draftError, setDraftError] = useState<{ sessionID: string; message: string } | null>(null);
+  const dismissedMentionRef = useRef<{ sessionID: string; start: number; query: string } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const activeOptionRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const scrollAnchorRef = useRef<{
@@ -433,10 +491,94 @@ export default function ChatView({
     top: number;
     messageCount: number;
   } | null>(null);
+  useEffect(() => {
+    if (!activeMention) return;
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      const url = `/api/sessions/${encodeURIComponent(sessionID)}/mentions?q=${encodeURIComponent(activeMention.query)}`;
+      void fetch(url, { signal: controller.signal, credentials: "same-origin" })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Search failed");
+          return response.json() as Promise<{ candidates?: unknown }>;
+        })
+        .then((result) => {
+          if (controller.signal.aborted) return;
+          const rows = Array.isArray(result.candidates)
+            ? result.candidates.filter((item): item is MentionCandidate => {
+                if (!item || typeof item !== "object") return false;
+                const candidate = item as Partial<MentionCandidate>;
+                return (
+                  (candidate.kind === "file" || candidate.kind === "directory" || candidate.kind === "reference") &&
+                  typeof candidate.label === "string" &&
+                  typeof candidate.name === "string" &&
+                  (candidate.kind === "reference" ? typeof candidate.alias === "string" : typeof candidate.path === "string")
+                );
+              })
+            : [];
+          setCandidates(rows);
+          setMentionState("ready");
+          setActiveCandidate(0);
+        })
+        .catch(() => {
+          if (!controller.signal.aborted) {
+            setCandidates([]);
+            setMentionState("error");
+          }
+        });
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeMention, sessionID]);
+
+  useEffect(() => {
+    activeOptionRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeCandidate, candidates]);
+
+  const currentDraft = () =>
+    draftRef.current.sessionID === sessionID ? draftRef.current.draft : draft;
+
+  const commitDraft = (content: ComposerDraftContent) => {
+    const next: ComposerDraft = { ...content, revision: currentDraft().revision + 1 };
+    draftRef.current = { sessionID, draft: next };
+    onDraftChange(sessionID, content);
+    setDraftError(null);
+    return next;
+  };
+
+  const updateActiveMention = (next: ActiveMentionQuery | null) => {
+    const dismissed = dismissedMentionRef.current;
+    if (dismissed?.sessionID === sessionID) {
+      if (isSameDismissedMention(dismissed, sessionID, next)) {
+        setActiveMention(null);
+        setCandidates([]);
+        setMentionState("idle");
+        return;
+      }
+      dismissedMentionRef.current = null;
+    }
+
+    if (
+      activeMention?.query === next?.query &&
+      activeMention?.start === next?.start &&
+      activeMention?.end === next?.end
+    ) return;
+    setCandidates([]);
+    setMentionState(next ? "loading" : "idle");
+    setActiveCandidate(0);
+    setActiveMention(next);
+  };
+
+  const updateMentionAtCaret = (caret: number) => {
+    const current = currentDraft();
+    updateActiveMention(findActiveMentionQuery(current.text, caret, current.mentions));
+  };
 
   // When a session (re)opens, loading flips to true — treat it as a fresh
-  // open and stick to the bottom, even if ChatView stayed mounted across a
-  // session switch and the user had scrolled up in the previous session.
+  // open and stick to the bottom rather than preserving an old scroll anchor.
   useEffect(() => {
     if (loading) {
       nearBottomRef.current = true;
@@ -470,15 +612,79 @@ export default function ChatView({
     nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
+  const handleTextChange = (value: string, caret: number) => {
+    const current = currentDraft();
+    const adjusted = trackMentionEdits(current.text, value, current.mentions);
+    commitDraft({ text: value, mentions: adjusted });
+    updateActiveMention(findActiveMentionQuery(value, caret, adjusted));
+  };
+
+  const selectCandidate = (candidate: MentionCandidate) => {
+    if (!activeMention) return;
+    const current = currentDraft();
+    const mentionText = `@${candidate.label}`;
+    const nextText = `${current.text.slice(0, activeMention.start)}${mentionText}${current.text.slice(activeMention.end)}`;
+    const adjusted = trackMentionEdits(current.text, nextText, current.mentions);
+    const descriptor: MentionDescriptor = candidate.kind === "reference"
+      ? { kind: "reference", alias: candidate.alias ?? candidate.name }
+      : { kind: candidate.kind, path: candidate.path ?? candidate.label };
+    const start = activeMention.start;
+    const nextMention: ComposerDraftMention = {
+      id: crypto.randomUUID(),
+      descriptor,
+      kind: candidate.kind,
+      label: candidate.label,
+      mention: { start, end: start + mentionText.length, text: mentionText },
+    };
+    const nextMentions = [...adjusted, nextMention].sort((a, b) => a.mention.start - b.mention.start);
+    commitDraft({ text: nextText, mentions: nextMentions });
+    updateActiveMention(null);
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      const caret = start + mentionText.length;
+      textarea.focus();
+      textarea.setSelectionRange(caret, caret);
+    });
+  };
+
+  const removeMention = (id: string) => {
+    const current = currentDraft();
+    const removed = removeComposerMention(
+      current.text,
+      current.mentions,
+      id,
+      textareaRef.current?.selectionStart ?? current.text.length,
+    );
+    if (!removed) return;
+    commitDraft({ text: removed.text, mentions: removed.mentions });
+    updateActiveMention(findActiveMentionQuery(removed.text, removed.caret, removed.mentions));
+    requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(removed.caret, removed.caret);
+    });
+  };
+
   const handleSend = async () => {
-    const trimmed = text.trim();
-    if (!trimmed || sending) return;
+    const current = currentDraft();
+    const prepared = prepareComposerDraftSubmission(current.text, current.mentions);
+    if (!prepared.text || sending) return;
+    if (!prepared.valid) {
+      setDraftError({
+        sessionID,
+        message: "A selected attachment no longer matches the draft text. Remove it and select it again before sending.",
+      });
+      return;
+    }
     // The user just sent a message — force scroll to the bottom (past the
     // optimistic bubble and any subsequent streaming) regardless of the
     // prior scroll position.
     nearBottomRef.current = true;
-    const ok = await onSend(trimmed);
-    if (ok) setText("");
+    const payload = prepared.mentions.map(({ descriptor, mention }) => ({ descriptor, mention }));
+    const ok = await onSend(sessionID, prepared.text, payload);
+    if (ok) onClearDraft(sessionID, current.revision);
   };
 
   const handleLoadOlder = async () => {
@@ -494,9 +700,66 @@ export default function ChatView({
   };
 
   const rows = groupToolOnlyMessages(messages);
+  const modelValue = (value: ModelRef) =>
+    JSON.stringify([value.providerID, value.id, value.variant ?? ""]);
+  const selectedModel = model ? modelValue(model) : "";
+  const selectModel = (value: string) => {
+    try {
+      const [providerID, id, variant] = JSON.parse(value) as [string, string, string];
+      const option = models.find(
+        (item) =>
+          item.model.providerID === providerID &&
+          item.model.id === id &&
+          (item.model.variant ?? "") === variant,
+      );
+      if (option) onSwitchModel(option.model);
+    } catch {
+      // Ignore malformed Select values.
+    }
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+    if (e.nativeEvent.isComposing) return;
+    if (shouldBlockEnterDuringMentionSearch({
+      key: e.key,
+      shiftKey: e.shiftKey,
+      hasActiveMention: Boolean(activeMention),
+      mentionState,
+    })) {
+      e.preventDefault();
+      return;
+    }
+    if (activeMention && candidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setActiveCandidate((index) => (index + 1) % candidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setActiveCandidate((index) => (index - 1 + candidates.length) % candidates.length);
+        return;
+      }
+      if ((e.key === "Enter" || e.key === "Tab") && candidates[activeCandidate]) {
+        e.preventDefault();
+        selectCandidate(candidates[activeCandidate]);
+        return;
+      }
+    }
+    if (e.key === "Escape" && activeMention) {
+      e.preventDefault();
+      dismissedMentionRef.current = {
+        sessionID,
+        start: activeMention.start,
+        query: activeMention.query,
+      };
+      setActiveMention(null);
+      setCandidates([]);
+      setMentionState("idle");
+      setActiveCandidate(0);
+      return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       void handleSend();
     }
@@ -523,8 +786,8 @@ export default function ChatView({
           <Typography variant="h6" component="h1" noWrap sx={{ flexGrow: 1 }}>
             {title}
           </Typography>
-          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 180, mx: 1 }}>
-            <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 160, mx: 0.5 }}>
+            <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || agents.length === 0}>
               <Select
                 value={agentId || ""}
                 onChange={(event) => onSwitchAgent(event.target.value)}
@@ -551,6 +814,39 @@ export default function ChatView({
                 {agents.map((agent) => (
                   <MenuItem key={agent.id} value={agent.id} title={agent.description}>
                     {agent.name || agent.id}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+          <Box sx={{ display: { xs: "none", md: "block" }, flexShrink: 0, width: 220, mx: 0.5 }}>
+            <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || models.length === 0}>
+              <Select
+                value={selectedModel}
+                onChange={(event) => selectModel(event.target.value)}
+                displayEmpty
+                inputProps={{ "aria-label": "Select model" }}
+                sx={{
+                  "& .MuiSelect-select": {
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  },
+                }}
+              >
+                {!model && (
+                  <MenuItem value="" disabled>
+                    {modelBusy ? "Loading model…" : "Select model"}
+                  </MenuItem>
+                )}
+                {model && !models.some((option) => modelValue(option.model) === selectedModel) && (
+                  <MenuItem value={selectedModel} disabled>
+                    Unavailable: {model.providerID}/{model.id}
+                  </MenuItem>
+                )}
+                {models.map((option) => (
+                  <MenuItem key={modelValue(option.model)} value={modelValue(option.model)} title={option.label}>
+                    {option.label}
                   </MenuItem>
                 ))}
               </Select>
@@ -597,7 +893,7 @@ export default function ChatView({
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Agent
           </Typography>
-          <FormControl fullWidth size="small" disabled={agentBusy || agents.length === 0}>
+          <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || agents.length === 0}>
             <Select
               value={agentId || ""}
               onChange={(event) => onSwitchAgent(event.target.value)}
@@ -621,11 +917,38 @@ export default function ChatView({
               ))}
             </Select>
           </FormControl>
-          {agentBusy && (
+          <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>
+            Model
+          </Typography>
+          <FormControl fullWidth size="small" disabled={agentBusy || modelBusy || models.length === 0}>
+            <Select
+              value={selectedModel}
+              onChange={(event) => selectModel(event.target.value)}
+              displayEmpty
+              inputProps={{ "aria-label": "Select model" }}
+            >
+              {!model && (
+                <MenuItem value="" disabled>
+                  {models.length === 0 ? "No models available" : "Select model"}
+                </MenuItem>
+              )}
+              {model && !models.some((option) => modelValue(option.model) === selectedModel) && (
+                <MenuItem value={selectedModel} disabled>
+                  Unavailable: {model.providerID}/{model.id}
+                </MenuItem>
+              )}
+              {models.map((option) => (
+                <MenuItem key={modelValue(option.model)} value={modelValue(option.model)} title={option.label}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          {(agentBusy || modelBusy) && (
             <Stack direction="row" spacing={1} role="status" aria-live="polite" sx={{ alignItems: "center", mt: 1 }}>
               <CircularProgress size={16} />
               <Typography variant="caption" color="text.secondary">
-                Switching agent…
+                {agentBusy ? "Switching agent…" : "Switching model…"}
               </Typography>
             </Stack>
           )}
@@ -780,19 +1103,121 @@ export default function ChatView({
             }}
           />
         )}
-        <TextField
-          multiline
-          maxRows={4}
-          fullWidth
-          placeholder="Message…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={sending}
-          sx={{
-            "& .MuiOutlinedInput-root": { minHeight: 48 },
-          }}
-        />
+        {activeMention && (
+          <Paper
+            variant="outlined"
+            sx={{
+              position: "absolute",
+              zIndex: 3,
+              left: 8,
+              right: 8,
+              bottom: "calc(100% + 8px)",
+              width: "min(760px, calc(100vw - 32px))",
+              maxHeight: 320,
+              overflowY: "auto",
+              mx: "auto",
+              boxShadow: 4,
+            }}
+          >
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1.5, pt: 1 }}>
+              Project files, folders, and visible references
+            </Typography>
+            {mentionState === "loading" && (
+              <Stack role="status" aria-live="polite" direction="row" spacing={1} sx={{ alignItems: "center", p: 1.5 }}>
+                <CircularProgress size={16} />
+                <Typography variant="body2">Searching this session’s project…</Typography>
+              </Stack>
+            )}
+            {mentionState === "error" && (
+              <Typography role="alert" color="error.main" variant="body2" sx={{ p: 1.5 }}>
+                Could not search files and references. Keep typing to retry.
+              </Typography>
+            )}
+            {mentionState === "ready" && candidates.length === 0 && (
+              <Typography role="status" aria-live="polite" color="text.secondary" variant="body2" sx={{ p: 1.5 }}>
+                No matching files, folders, or visible references.
+              </Typography>
+            )}
+            {candidates.length > 0 && (
+              <List component="div" id="mention-options" role="listbox" aria-label="File and reference suggestions" dense sx={{ py: 0.5 }}>
+                {candidates.map((candidate, index) => (
+                  <ListItemButton
+                    id={`mention-option-${index}`}
+                    key={`${candidate.kind}:${candidate.kind === "reference" ? candidate.alias : candidate.path}:${index}`}
+                    component="div"
+                    role="option"
+                    tabIndex={-1}
+                    ref={index === activeCandidate ? activeOptionRef : undefined}
+                    aria-selected={index === activeCandidate}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => selectCandidate(candidate)}
+                    sx={{ minHeight: 48, gap: 1, px: 1.5, bgcolor: index === activeCandidate ? "action.selected" : undefined }}
+                  >
+                    {candidateIcon(candidate.kind)}
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography variant="body2" noWrap>{candidate.label}</Typography>
+                    </Box>
+                    <Chip size="small" variant="outlined" label={candidate.kind} />
+                  </ListItemButton>
+                ))}
+              </List>
+            )}
+          </Paper>
+        )}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          {mentions.length > 0 && (
+            <Stack direction="row" role="group" aria-label="Selected file attachments" sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
+              {mentions.map((mention) => (
+                <Chip
+                  key={mention.id}
+                  size="small"
+                  variant="outlined"
+                  icon={candidateIcon(mention.kind)}
+                  label={`${mention.kind}: @${mention.label}`}
+                  title={`Attached ${mention.kind}: ${mention.label}`}
+                  onDelete={() => removeMention(mention.id)}
+                  sx={{ maxWidth: "100%", minHeight: 32, "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" } }}
+                />
+              ))}
+            </Stack>
+          )}
+          {draftError?.sessionID === sessionID && (
+            <Typography role="alert" color="error.main" variant="body2" sx={{ mb: 0.75 }}>
+              {draftError.message}
+            </Typography>
+          )}
+          <TextField
+            inputRef={textareaRef}
+            multiline
+            maxRows={4}
+            fullWidth
+            placeholder="Message… (type @ to attach a project file or reference)"
+            value={text}
+            onChange={(e) => handleTextChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+            disabled={sending}
+            slotProps={{
+              htmlInput: {
+                role: "combobox",
+                "aria-label": "Message",
+                "aria-autocomplete": "list",
+                "aria-haspopup": "listbox",
+                "aria-multiline": "true",
+                "aria-expanded": Boolean(activeMention && candidates.length > 0),
+                "aria-controls": activeMention && candidates.length > 0 ? "mention-options" : undefined,
+                "aria-activedescendant": activeMention && candidates.length > 0 ? `mention-option-${activeCandidate}` : undefined,
+                onKeyDown: handleKeyDown,
+                onKeyUp: (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+                  if (!e.nativeEvent.isComposing) updateMentionAtCaret(e.currentTarget.selectionStart);
+                },
+                onClick: (e: React.MouseEvent<HTMLTextAreaElement>) => updateMentionAtCaret(e.currentTarget.selectionStart),
+                onSelect: (e: React.SyntheticEvent<HTMLTextAreaElement>) => updateMentionAtCaret(e.currentTarget.selectionStart),
+              },
+            }}
+            sx={{
+              "& .MuiOutlinedInput-root": { minHeight: 48 },
+            }}
+          />
+        </Box>
         <IconButton
           aria-label="Send"
           size="large"
