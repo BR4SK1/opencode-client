@@ -3,10 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Alert,
   Box,
-  Button,
-  Snackbar,
   Stack,
   Typography,
   useMediaQuery,
@@ -15,6 +12,21 @@ import {
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import type { FormInfo, ModelRef } from "@opencode/client";
 import type { PromptMentionAttachment } from "@/lib/prompt-mentions";
+import {
+  buildSessionAttention,
+  createPermissionReconciler,
+  createRetrySlot,
+  normalizePendingPermissions,
+  overflowAttentionMessage,
+  permissionsFromPendingPayload,
+  removePermission,
+  sessionAttentionMessage,
+  snapshotSkipped,
+  splitSessionAttention,
+  upsertPermission,
+  type PermissionReconciler,
+  type RetrySlot,
+} from "@/lib/notifications";
 import {
   clearComposerDraftIfRevision,
   getComposerDraft,
@@ -28,6 +40,13 @@ import ChatView from "./ChatView";
 import PermissionDialog from "./PermissionDialog";
 import FormDialog from "./FormDialog";
 import QuestionDialog from "./QuestionDialog";
+import NotificationStack, {
+  type NotificationAction,
+  type NotificationItem,
+} from "./NotificationStack";
+
+const NOTIFICATION_ACTION_RELOAD = "reload";
+const NOTIFICATION_ACTION_SHOW_LIST = "show-list";
 
 export interface SessionVM {
   id: string;
@@ -97,6 +116,7 @@ interface StreamingVM {
 
 export interface PendingPermission {
   id: string;
+  sessionID: string;
   action: string;
   resources: string[];
   save?: string[];
@@ -114,12 +134,6 @@ export interface PendingQuestion {
     custom?: boolean;
   }>;
 }
-
-type OtherPending = { id: string; sessionID: string; action: string; message?: string };
-
-type PermissionToast = { sessionID: string; title: string; count: number; key: number };
-type FormToast = { sessionID: string; title: string; count: number; key: number };
-type QuestionToast = { sessionID: string; title: string; count: number; key: number };
 
 /* Raw shapes used only to map history into view models. */
 interface RawPart {
@@ -332,7 +346,12 @@ export default function ChatApp() {
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [toolRunningCount, setToolRunningCount] = useState(0);
-  const [pendingPermissions, setPendingPermissions] = useState<PendingPermission[]>([]);
+  // Authoritative pending-permission store keyed by session. Kept across
+  // navigation so a pending approval never vanishes from badges/notices when
+  // the user leaves its session; the active session's entry drives dialogs.
+  const [permissionsBySession, setPermissionsBySession] = useState<
+    Map<string, PendingPermission[]>
+  >(() => new Map());
   const [pendingForms, setPendingForms] = useState<FormInfo[]>([]);
   const [pendingQuestions, setPendingQuestions] = useState<PendingQuestion[]>([]);
   const [sendingSessionIDs, setSendingSessionIDs] = useState<Set<string>>(() => new Set());
@@ -342,10 +361,6 @@ export default function ChatApp() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
-  const [otherPending, setOtherPending] = useState<OtherPending[]>([]);
-  const [permissionToast, setPermissionToast] = useState<PermissionToast | null>(null);
-  const [formToast, setFormToast] = useState<FormToast | null>(null);
-  const [questionToast, setQuestionToast] = useState<QuestionToast | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
   const sendingSessionIDsRef = useRef(new Set<string>());
@@ -354,15 +369,30 @@ export default function ChatApp() {
   const olderCursorRef = useRef<string | null>(null);
   const olderPageLoadedRef = useRef(false);
   const loadingOlderGenerationRef = useRef<number | null>(null);
-  const pendingPermissionsRef = useRef<PendingPermission[]>([]);
+  const permissionsBySessionRef = useRef<Map<string, PendingPermission[]>>(new Map());
+  // Trailing retry slots: a reconciliation skipped by an event race re-runs
+  // once the event burst settles instead of waiting for the next
+  // reconnect/visibility. Superseded snapshots do not retry (the newer fetch
+  // covers them — see createPermissionReconciler).
+  const permissionReconcileRetry = useRef<RetrySlot | null>(null);
+  const formsResyncRetry = useRef<RetrySlot | null>(null);
+  if (permissionReconcileRetry.current == null) {
+    permissionReconcileRetry.current = createRetrySlot();
+  }
+  if (formsResyncRetry.current == null) {
+    formsResyncRetry.current = createRetrySlot();
+  }
+  // Same guard pair for pending forms (optimistically upserted from
+  // form.created events). Form snapshots all cover the same global scope, so
+  // a superseded one needs no retry; only event races do.
+  const formsRevisionRef = useRef(0);
+  const formsSnapshotSeqRef = useRef(0);
+  // Latest-callback mirror for the forms retry (assigned in an effect below).
+  const resyncFormsLatestRef = useRef<() => void>(() => {});
   const pendingQuestionsRevisionRef = useRef(0);
   const activityRevisionRef = useRef(0);
   const activitySnapshotRequestRef = useRef(0);
   const sessionsRef = useRef<SessionVM[]>([]);
-  const otherPendingRef = useRef<OtherPending[]>([]);
-  const toastKeyRef = useRef(0);
-  const formToastKeyRef = useRef(0);
-  const questionToastKeyRef = useRef(0);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -371,16 +401,12 @@ export default function ChatApp() {
   }, [activeId]);
 
   useEffect(() => {
-    pendingPermissionsRef.current = pendingPermissions;
-  }, [pendingPermissions]);
+    permissionsBySessionRef.current = permissionsBySession;
+  }, [permissionsBySession]);
 
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
-
-  useEffect(() => {
-    otherPendingRef.current = otherPending;
-  }, [otherPending]);
 
   const apiFetch = useCallback(
     (url: string, init?: RequestInit) => {
@@ -694,29 +720,96 @@ export default function ChatApp() {
     }
   }, [fetchMessagePage, setMessageCursor]);
 
-  const resyncPendingPermission = useCallback(async () => {
-    const id = activeIdRef.current;
-    const generation = sessionGenerationRef.current;
-    if (!id) return;
-    try {
-      const res = await apiFetch(`/api/sessions/${id}/permissions`);
-      const json = asRecord(await res.json());
-      const pending = Array.isArray(json.pending) ? json.pending : [];
-      if (
-        activeIdRef.current !== id ||
-        sessionGenerationRef.current !== generation
-      ) return;
-      setPendingPermissions(pending as PendingPermission[]);
-    } catch {
-      /* transient — next reconnect or focus retries */
-    }
+  // Coordinated pending-permission reconciliation: per-scope event revisions,
+  // a shared snapshot sequence, and coverage-aware retry decisions live in
+  // createPermissionReconciler (unit-tested for overlap/livelock scenarios).
+  // Created in a mount effect (before any fetch trigger can run) so the
+  // fetch/apply closures are not built during render.
+  const permissionReconciler = useRef<PermissionReconciler | null>(null);
+  useEffect(() => {
+    if (permissionReconciler.current != null) return;
+    permissionReconciler.current = createPermissionReconciler({
+      fetchGlobal: async () => {
+        try {
+          const res = await apiFetch("/api/permissions/pending");
+          // Never apply an error response: it would rebuild the map empty
+          // and erase every session's pending permissions.
+          if (!res.ok) return null;
+          const json = asRecord(await res.json());
+          const pending = Array.isArray(json.pending) ? json.pending : [];
+          return { ok: true, permissions: normalizePendingPermissions(pending) };
+        } catch {
+          /* transient — next reconnect or focus retries */
+          return null;
+        }
+      },
+      fetchSession: async (sessionID) => {
+        try {
+          const res = await apiFetch(`/api/sessions/${sessionID}/permissions`);
+          // Never apply an error response: it would erase the session's
+          // pending permissions.
+          if (!res.ok) return null;
+          const json = asRecord(await res.json());
+          const pending = Array.isArray(json.pending) ? json.pending : [];
+          return { ok: true, permissions: normalizePendingPermissions(pending) };
+        } catch {
+          /* transient — next reconnect or focus retries */
+          return null;
+        }
+      },
+      applyGlobal: (permissions) => {
+        setPermissionsBySession(permissionsFromPendingPayload({ pending: permissions }));
+      },
+      applySession: (sessionID, permissions) => {
+        // Session-scoped write; other sessions keep their state. An empty
+        // result clears a stale entry for this session.
+        setPermissionsBySession((previous) => {
+          const next = new Map(previous);
+          next.set(sessionID, permissions as PendingPermission[]);
+          return next;
+        });
+      },
+      schedule: (run) => {
+        permissionReconcileRetry.current?.schedule(run);
+      },
+    });
   }, [apiFetch]);
 
+  const resyncPendingPermission = useCallback((sessionID?: string) => {
+    const id = sessionID ?? activeIdRef.current;
+    if (!id) return;
+    void permissionReconciler.current?.reconcileSession(id);
+  }, []);
+
+  const refetchPendingPermissions = useCallback(() => {
+    void permissionReconciler.current?.reconcileGlobal();
+  }, []);
+
   const resyncPendingForms = useCallback(async () => {
+    const token = {
+      revision: formsRevisionRef.current,
+      seq: ++formsSnapshotSeqRef.current,
+    };
     try {
       const res = await apiFetch("/api/forms/pending");
+      // Never apply an error response: it would replace optimistic
+      // form.created upserts with an empty list.
       if (!res.ok) return;
       const json = asRecord(await res.json());
+      const skipped = snapshotSkipped(token, {
+        revision: formsRevisionRef.current,
+        seq: formsSnapshotSeqRef.current,
+      });
+      if (skipped) {
+        // Form snapshots all cover the same global scope, so one superseded
+        // by a newer fetch is fully covered by it — no retry. An event race
+        // retries once the burst settles instead of dropping reconciliation.
+        if (skipped === "superseded") return;
+        formsResyncRetry.current?.schedule(() => {
+          resyncFormsLatestRef.current();
+        });
+        return;
+      }
       setPendingForms(Array.isArray(json.forms) ? (json.forms as FormInfo[]) : []);
     } catch {
       /* transient — next reconnect or focus retries */
@@ -739,26 +832,20 @@ export default function ChatApp() {
     }
   }, [apiFetch]);
 
-  const refetchPendingPermissions = useCallback(async () => {
-    try {
-      const res = await apiFetch("/api/permissions/pending");
-      const json = asRecord(await res.json());
-      const pending = Array.isArray(json.pending) ? json.pending : [];
-      setOtherPending(
-        pending.map((p) => {
-          const r = asRecord(p);
-          return {
-            id: str(r.id),
-            sessionID: str(r.sessionID),
-            action: str(r.action),
-            message: str(r.message) || undefined,
-          };
-        }),
-      );
-    } catch {
-      /* transient — next reconnect or focus retries */
-    }
-  }, [apiFetch]);
+  // Latest-callback mirror lets a skipped forms fetch schedule its own retry
+  // without a circular useCallback dependency.
+  useEffect(() => {
+    resyncFormsLatestRef.current = () => void resyncPendingForms();
+  }, [resyncPendingForms]);
+
+  // Retry slots hold timers; cancel them on unmount.
+  useEffect(
+    () => () => {
+      permissionReconcileRetry.current?.cancel();
+      formsResyncRetry.current?.cancel();
+    },
+    [],
+  );
 
   const openSession = useCallback(
     async (id: string) => {
@@ -775,12 +862,11 @@ export default function ChatApp() {
       setSwitchingAgent(false);
       setSwitchingModel(false);
       setToolRunningCount(0);
-      setPendingPermissions([]);
       setAgents([]);
       setModels([]);
       setLoadingMessages(true);
       void fetchAgentState(id, generation);
-      void resyncPendingPermission();
+      void resyncPendingPermission(id);
       void resyncPendingForms();
       void resyncPendingQuestions();
       try {
@@ -808,6 +894,18 @@ export default function ChatApp() {
     },
     [fetchAgentState, fetchMessagePage, resyncPendingForms, resyncPendingPermission, resyncPendingQuestions, setMessageCursor],
   );
+
+  // Leave the active session for the session list. Pending permissions are
+  // intentionally retained in the per-session map so they remain visible as
+  // badges and notices instead of vanishing until the next global refetch.
+  const backToList = useCallback(() => {
+    ++sessionGenerationRef.current;
+    ++headRequestRef.current;
+    activeIdRef.current = null;
+    setActiveId(null);
+    setAgents([]);
+    setModels([]);
+  }, []);
 
   const newChat = useCallback(async () => {
     try {
@@ -934,53 +1032,45 @@ export default function ChatApp() {
           }
           break;
         }
-        case "permission.asked":
-          if (str(d.sessionID) === activeIdRef.current) {
-            const permission: PendingPermission = {
-              id: str(d.id),
-              action: str(d.action),
-              resources: Array.isArray(d.resources)
-                ? d.resources.map((r) => str(r)).filter(Boolean)
-                : [],
-              save: Array.isArray(d.save)
-                ? d.save.map((s) => str(s)).filter(Boolean)
-                : undefined,
-              message: str(d.message) || undefined,
-            };
-            setPendingPermissions((previous) => [
-              ...previous.filter((item) => item.id !== permission.id),
-              permission,
-            ]);
-          } else {
-            const sid = str(d.sessionID);
-            const pid = str(d.id);
-            const entry: OtherPending = {
-              id: pid,
-              sessionID: sid,
-              action: str(d.action),
-              message: str(d.message) || undefined,
-            };
-            setOtherPending((prev) => [...prev.filter((x) => x.id !== pid), entry]);
-            const s = sessionsRef.current.find((x) => x.id === sid);
-            if (!s) void refetchSessions();
-            const title = s?.title || "Untitled";
-            setPermissionToast((prev) =>
-              prev && prev.sessionID === sid
-                ? { ...prev, count: prev.count + 1, key: ++toastKeyRef.current }
-                : { sessionID: sid, title, count: 1, key: ++toastKeyRef.current },
-            );
-          }
+        case "permission.asked": {
+          const sid = str(d.sessionID);
+          const pid = str(d.id);
+          if (!sid || !pid) break;
+          permissionReconciler.current?.noteEvent(sid);
+          const permission: PendingPermission = {
+            id: pid,
+            sessionID: sid,
+            action: str(d.action),
+            resources: Array.isArray(d.resources)
+              ? d.resources.map((r) => str(r)).filter(Boolean)
+              : [],
+            save: Array.isArray(d.save)
+              ? d.save.map((s) => str(s)).filter(Boolean)
+              : undefined,
+            message: str(d.message) || undefined,
+          };
+          // Every session's pending permission is tracked in one place, so
+          // state survives navigation; the active session additionally shows
+          // its dialog and gets resync-corrected.
+          setPermissionsBySession((previous) =>
+            upsertPermission(previous, permission),
+          );
+          if (!sessionsRef.current.some((x) => x.id === sid)) void refetchSessions();
           break;
+        }
         case "permission.replied": {
           const rid = str(d.requestID);
-          if (pendingPermissionsRef.current.some((item) => item.id === rid)) {
-            setPendingPermissions((previous) => previous.filter((item) => item.id !== rid));
-            void resyncPendingPermission();
-          }
-          const sid2 = str(d.sessionID);
-          const next = otherPendingRef.current.filter((x) => x.id !== rid);
-          if (next.length !== otherPendingRef.current.length) setOtherPending(next);
-          setPermissionToast((t) => (t && t.sessionID === sid2 ? null : t));
+          if (!rid) break;
+          const replySid = str(d.sessionID);
+          if (replySid) permissionReconciler.current?.noteEvent(replySid);
+          const activeHadIt = Boolean(
+            activeIdRef.current &&
+              permissionsBySessionRef.current
+                .get(activeIdRef.current)
+                ?.some((item) => item.id === rid),
+          );
+          setPermissionsBySession((previous) => removePermission(previous, rid));
+          if (activeHadIt) void resyncPendingPermission();
           break;
         }
         case "session.agent.selected": {
@@ -1015,29 +1105,36 @@ export default function ChatApp() {
         case "form.created": {
           const form = asRecord(d.form);
           const sid = str(form.sessionID);
-          if (sid) {
-            void resyncPendingForms();
+          const fid = str(form.id);
+          if (sid && fid) {
+            // The event carries the full form record; upsert it immediately so
+            // a transient resync failure cannot silently lose the pending-form
+            // state (the former toast showed from the event itself). The
+            // resync below remains the reconciliation step: on success it
+            // replaces this list with server truth, so no phantom entry
+            // survives a disagreement.
+            formsRevisionRef.current += 1;
+            setPendingForms((previous) => [
+              ...previous.filter((item) => item.id !== fid),
+              form as unknown as FormInfo,
+            ]);
             if (sid !== activeIdRef.current) {
               const session = sessionsRef.current.find((item) => item.id === sid);
               if (!session) void refetchSessions();
-              setFormToast((previous) =>
-                previous && previous.sessionID === sid
-                  ? { ...previous, count: previous.count + 1, key: ++formToastKeyRef.current }
-                  : {
-                      sessionID: sid,
-                      title: session?.title || "Untitled",
-                      count: 1,
-                      key: ++formToastKeyRef.current,
-                    },
-              );
             }
           }
+          // If the payload were ever missing id/sessionID this falls back to
+          // resync-only (the pre-existing behavior).
+          void resyncPendingForms();
           break;
         }
         case "form.replied":
         case "form.cancelled": {
           const formID = str(d.id);
-          if (formID) setPendingForms((previous) => previous.filter((form) => form.id !== formID));
+          if (formID) {
+            formsRevisionRef.current += 1;
+            setPendingForms((previous) => previous.filter((form) => form.id !== formID));
+          }
           void resyncPendingForms();
           break;
         }
@@ -1052,16 +1149,6 @@ export default function ChatApp() {
           if (question.sessionID !== activeIdRef.current) {
             const session = sessionsRef.current.find((item) => item.id === question.sessionID);
             if (!session) void refetchSessions();
-            setQuestionToast((previous) =>
-              previous && previous.sessionID === question.sessionID
-                ? { ...previous, count: previous.count + 1, key: ++questionToastKeyRef.current }
-                : {
-                    sessionID: question.sessionID,
-                    title: session?.title || "Untitled",
-                    count: 1,
-                    key: ++questionToastKeyRef.current,
-                  },
-            );
           }
           break;
         }
@@ -1071,8 +1158,6 @@ export default function ChatApp() {
           const requestID = str(d.requestID);
           if (requestID) {
             setPendingQuestions((previous) => previous.filter((item) => item.id !== requestID));
-            const sid = str(d.sessionID);
-            setQuestionToast((previous) => previous?.sessionID === sid ? null : previous);
           }
           void resyncPendingQuestions();
           break;
@@ -1174,6 +1259,8 @@ export default function ChatApp() {
           void refetchSessions();
           break;
         case "server.connected":
+          // A live event stream means connection-loss warnings are stale.
+          setConnectionLost(false);
           void reconcileSessionActivity();
           void resyncPendingPermission();
           void resyncPendingForms();
@@ -1242,9 +1329,14 @@ export default function ChatApp() {
     return () => clearTimeout(t);
   }, [refetchSessions, refetchPendingPermissions, resyncPendingForms, resyncPendingQuestions]);
 
+  const allPermissions = useMemo(
+    () => Array.from(permissionsBySession.values()).flat(),
+    [permissionsBySession],
+  );
+
   const pendingCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    for (const p of otherPending) {
+    for (const p of allPermissions) {
       counts.set(p.sessionID, (counts.get(p.sessionID) ?? 0) + 1);
     }
     for (const form of pendingForms) {
@@ -1254,16 +1346,15 @@ export default function ChatApp() {
       counts.set(question.sessionID, (counts.get(question.sessionID) ?? 0) + 1);
     }
     return counts;
-  }, [otherPending, pendingForms, pendingQuestions]);
+  }, [allPermissions, pendingForms, pendingQuestions]);
 
   const sessionStatuses = useMemo(() => {
     const statuses = new Map<string, SessionListStatus>(sessionActivity);
-    for (const pending of otherPending) statuses.set(pending.sessionID, "waiting");
+    for (const pending of allPermissions) statuses.set(pending.sessionID, "waiting");
     for (const form of pendingForms) statuses.set(form.sessionID, "waiting");
     for (const question of pendingQuestions) statuses.set(question.sessionID, "waiting");
-    if (activeId && pendingPermissions.length > 0) statuses.set(activeId, "waiting");
     return statuses;
-  }, [activeId, otherPending, pendingForms, pendingPermissions, pendingQuestions, sessionActivity]);
+  }, [allPermissions, pendingForms, pendingQuestions, sessionActivity]);
 
   const displayMessages = useMemo(
     () => withStreamingMessages(history, streaming),
@@ -1271,6 +1362,10 @@ export default function ChatApp() {
   );
 
   const activeSession = sessions.find((session) => session.id === activeId);
+  const activePermissions = useMemo(
+    () => (activeId ? permissionsBySession.get(activeId) ?? [] : []),
+    [activeId, permissionsBySession],
+  );
   const activePendingForm = pendingForms.find((form) => form.sessionID === activeId);
   const activePendingQuestion = pendingQuestions.find((question) => question.sessionID === activeId);
   const agentNames = useMemo(
@@ -1289,6 +1384,94 @@ export default function ChatApp() {
   );
   const showMobileList = !isDesktop && !activeId;
   const activeComposerDraft = activeId ? getComposerDraft(composerDrafts, activeId) : undefined;
+
+  const attention = useMemo(
+    () =>
+      buildSessionAttention({
+        sessions,
+        otherPending: allPermissions,
+        pendingForms,
+        pendingQuestions,
+        // The active session's requests surface as dialogs, not notices.
+        excludeSessionID: activeId,
+      }),
+    [activeId, allPermissions, pendingForms, pendingQuestions, sessions],
+  );
+  const { visible: visibleAttention, overflowCount } = useMemo(
+    () => splitSessionAttention(attention),
+    [attention],
+  );
+
+  // Dispatches notification action buttons at event time; action ids are
+  // declarative so no ref-writing callback flows through render-scope data.
+  const handleNotificationAction = useCallback(
+    (_item: NotificationItem, action: NotificationAction) => {
+      if (action.id === NOTIFICATION_ACTION_RELOAD) {
+        location.reload();
+        return;
+      }
+      if (action.id === NOTIFICATION_ACTION_SHOW_LIST) {
+        backToList();
+        return;
+      }
+      // Otherwise the id is the sessionID to open.
+      void openSession(action.id);
+    },
+    [backToList, openSession],
+  );
+
+  // Built during render; action ids keep this free of ref-writing callbacks.
+  const politeItems: NotificationItem[] = visibleAttention.map((entry) => ({
+    key: `attention-${entry.sessionID}`,
+    severity: entry.primary === "permission" ? "warning" : "info",
+    message: sessionAttentionMessage(entry),
+    action: { id: entry.sessionID, label: "Open" },
+  }));
+  if (overflowCount > 0) {
+    const overflowItem: NotificationItem = {
+      key: "attention-overflow",
+      severity: "info",
+      message: overflowAttentionMessage(overflowCount),
+    };
+    // On mobile the hidden sessions are only reachable via the list, so give
+    // the summary a usable action; the desktop sidebar already shows every
+    // session with badges.
+    if (!isDesktop) {
+      overflowItem.action = { id: NOTIFICATION_ACTION_SHOW_LIST, label: "Show list" };
+    }
+    politeItems.push(overflowItem);
+  }
+
+  const assertiveItems = useMemo<NotificationItem[]>(() => {
+    const items: NotificationItem[] = [];
+    if (connectionLost) {
+      items.push({
+        key: "connection-lost",
+        severity: "warning",
+        message: "Live updates lost — reload the page to reconnect.",
+        action: { id: NOTIFICATION_ACTION_RELOAD, label: "Reload" },
+        onClose: () => setConnectionLost(false),
+      });
+    }
+    if (error) {
+      items.push({
+        key: "app-error",
+        severity: "error",
+        message: error,
+        onClose: () => setError(null),
+      });
+    }
+    return items;
+  }, [connectionLost, error]);
+
+  const notificationArea = (
+    <NotificationStack
+      assertiveItems={assertiveItems}
+      politeItems={politeItems}
+      onAction={handleNotificationAction}
+    />
+  );
+  const notificationCount = assertiveItems.length + politeItems.length;
 
   return (
     <Box
@@ -1344,6 +1527,7 @@ export default function ChatApp() {
             onOpen={(id) => void openSession(id)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
+            notificationArea={notificationArea}
           />
         </Box>
       ) : activeId ? (
@@ -1373,19 +1557,7 @@ export default function ChatApp() {
             loadingOlderMessages={loadingOlderMessages}
             sending={sendingSessionIDs.has(activeId) || switchingAgent || switchingModel}
             onSend={sendPrompt}
-            onBack={
-              isDesktop
-                ? undefined
-                : () => {
-                    ++sessionGenerationRef.current;
-                    ++headRequestRef.current;
-                    activeIdRef.current = null;
-                    setActiveId(null);
-                    setAgents([]);
-                    setModels([]);
-                    setPendingPermissions([]);
-                  }
-            }
+            onBack={isDesktop ? undefined : backToList}
             onRefresh={() => {
               void refetchMessages();
               void fetchAgentState(activeId);
@@ -1395,6 +1567,8 @@ export default function ChatApp() {
             }}
             onLoadOlder={loadOlderMessages}
             onOpenSession={openSession}
+            notificationArea={notificationArea}
+            notificationCount={notificationCount}
           />
         </Box>
       ) : (
@@ -1403,25 +1577,38 @@ export default function ChatApp() {
             flex: 1,
             minWidth: 0,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
+            flexDirection: "column",
           }}
         >
-          <Stack spacing={1} sx={{ alignItems: "center" }}>
-            <ForumOutlined sx={{ fontSize: 48, color: "text.disabled" }} />
-            <Typography color="text.secondary">Select a session</Typography>
-          </Stack>
+          <Box
+            sx={{
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Stack spacing={1} sx={{ alignItems: "center" }}>
+              <ForumOutlined sx={{ fontSize: 48, color: "text.disabled" }} />
+              <Typography color="text.secondary">Select a session</Typography>
+            </Stack>
+          </Box>
+          {notificationArea && (
+            <Box sx={{ px: 1.5, pb: "calc(8px + env(safe-area-inset-bottom, 0px))" }}>
+              {notificationArea}
+            </Box>
+          )}
         </Box>
       )}
 
-      {pendingPermissions[0] && activeId && (
+      {activePermissions[0] && activeId && (
         <PermissionDialog
-          permission={pendingPermissions[0]}
+          permission={activePermissions[0]}
           sessionId={activeId}
           onDone={() => void resyncPendingPermission()}
         />
       )}
-      {pendingPermissions.length === 0 && activeId && activePendingQuestion && (
+      {activePermissions.length === 0 && activeId && activePendingQuestion && (
         <QuestionDialog
           key={activePendingQuestion.id}
           request={activePendingQuestion}
@@ -1431,7 +1618,7 @@ export default function ChatApp() {
           }}
         />
       )}
-      {pendingPermissions.length === 0 && !activePendingQuestion && activeId && activePendingForm && (
+      {activePermissions.length === 0 && !activePendingQuestion && activeId && activePendingForm && (
         <FormDialog
           key={activePendingForm.id}
           form={activePendingForm}
@@ -1441,167 +1628,6 @@ export default function ChatApp() {
             void resyncPendingForms();
           }}
         />
-      )}
-
-      <Snackbar
-        key={formToast?.key ?? 0}
-        open={formToast !== null}
-        autoHideDuration={7000}
-        slotProps={{ content: { sx: { borderRadius: 2 } } }}
-        onClose={(_event, reason) => {
-          if (reason !== "clickaway") setFormToast(null);
-        }}
-        message={
-          formToast
-            ? `Session “${formToast.title}” needs an answer${formToast.count > 1 ? ` (${formToast.count} pending)` : ""}`
-            : ""
-        }
-        action={
-          formToast && (
-            <Button
-              color="inherit"
-              variant="outlined"
-              size="small"
-              sx={{ height: 40, flexShrink: 0 }}
-              onClick={() => {
-                const sid = formToast.sessionID;
-                setFormToast(null);
-                void openSession(sid);
-              }}
-            >
-              Open
-            </Button>
-          )
-        }
-        sx={{
-          position: "fixed",
-          bottom: 144,
-          left: 16,
-          right: 16,
-          zIndex: (theme) => theme.zIndex.snackbar,
-        }}
-      />
-
-      <Snackbar
-        key={questionToast?.key ?? 0}
-        open={questionToast !== null}
-        autoHideDuration={7000}
-        slotProps={{ content: { sx: { borderRadius: 2 } } }}
-        onClose={(_event, reason) => {
-          if (reason !== "clickaway") setQuestionToast(null);
-        }}
-        message={
-          questionToast
-            ? `Session “${questionToast.title}” has a question${questionToast.count > 1 ? ` (${questionToast.count} pending)` : ""}`
-            : ""
-        }
-        action={
-          questionToast && (
-            <Button
-              color="inherit"
-              variant="outlined"
-              size="small"
-              sx={{ height: 40, flexShrink: 0 }}
-              onClick={() => {
-                const sid = questionToast.sessionID;
-                setQuestionToast(null);
-                void openSession(sid);
-              }}
-            >
-              Open
-            </Button>
-          )
-        }
-        sx={{
-          position: "fixed",
-          bottom: 200,
-          left: 16,
-          right: 16,
-          zIndex: (theme) => theme.zIndex.snackbar,
-        }}
-      />
-
-      <Snackbar
-        key={permissionToast?.key ?? 0}
-        open={permissionToast !== null}
-        autoHideDuration={7000}
-        slotProps={{
-          content: { sx: { borderRadius: 2 } },
-        }}
-        onClose={(_e, reason) => {
-          if (reason !== "clickaway") setPermissionToast(null);
-        }}
-        message={
-          permissionToast
-            ? `Session “${permissionToast.title}” needs approval${permissionToast.count > 1 ? ` (${permissionToast.count} pending)` : ""}`
-            : ""
-        }
-        action={
-          permissionToast && (
-            <Button
-              color="inherit"
-              variant="outlined"
-              size="small"
-              sx={{ height: 40, flexShrink: 0 }}
-              onClick={() => {
-                const sid = permissionToast.sessionID;
-                setPermissionToast(null);
-                void openSession(sid);
-              }}
-            >
-              Open
-            </Button>
-          )
-        }
-        sx={{
-          position: "fixed",
-          bottom: 88,
-          left: 16,
-          right: 16,
-          zIndex: (t) => t.zIndex.snackbar,
-        }}
-      />
-
-      {connectionLost && (
-        <Alert
-          severity="warning"
-          onClose={() => setConnectionLost(false)}
-          sx={{
-            position: "fixed",
-            bottom: 88,
-            left: 16,
-            right: 16,
-            zIndex: (t) => t.zIndex.snackbar - 1,
-          }}
-          action={
-            <Button
-              variant="outlined"
-              size="small"
-              sx={{ height: 40 }}
-              onClick={() => location.reload()}
-            >
-              Reload
-            </Button>
-          }
-        >
-          Live updates lost — reload the page to reconnect.
-        </Alert>
-      )}
-
-      {error && (
-        <Alert
-          severity="error"
-          onClose={() => setError(null)}
-          sx={{
-            position: "fixed",
-            bottom: 88,
-            left: 16,
-            right: 16,
-            zIndex: (t) => t.zIndex.snackbar,
-          }}
-        >
-          {error}
-        </Alert>
       )}
     </Box>
   );

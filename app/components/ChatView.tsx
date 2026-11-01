@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import ArrowBack from "@mui/icons-material/ArrowBack";
 import ChevronRight from "@mui/icons-material/ChevronRight";
 import Close from "@mui/icons-material/Close";
@@ -436,6 +436,16 @@ interface ChatViewProps {
   onBack?: () => void;
   onRefresh: () => void;
   onOpenSession?: (id: string) => void;
+  /**
+   * In-flow notification stack rendered just above the composer so notices
+   * never obscure it and move with keyboard/composer height changes.
+   */
+  notificationArea?: ReactNode;
+  /**
+   * Number of notifications currently shown. Changes when the stack's height
+   * may change, driving bottom re-pinning of the scroll area.
+   */
+  notificationCount?: number;
 }
 
 export default function ChatView({
@@ -466,6 +476,8 @@ export default function ChatView({
   onBack,
   onRefresh,
   onOpenSession,
+  notificationArea,
+  notificationCount,
 }: ChatViewProps) {
   const draftRef = useRef({ sessionID, draft });
   useLayoutEffect(() => {
@@ -605,6 +617,16 @@ export default function ChatView({
       el.scrollTop = el.scrollHeight;
     }
   }, [messages, toolRunningCount, loadingOlderMessages]);
+
+  // The in-flow notification stack takes layout space above the composer, so
+  // when it appears, disappears, or changes size it shrinks/grows the scroll
+  // area and can push the newest message out of view. Keep a bottom-pinned
+  // user pinned; never force scroll when they intentionally scrolled away.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || notificationCount === undefined || !nearBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [notificationCount]);
 
   const handleScroll = () => {
     const el = scrollRef.current;
@@ -1081,6 +1103,10 @@ export default function ChatView({
 
         </Box>
       </Box>
+
+      {notificationArea && (
+        <Box sx={{ flexShrink: 0, px: 1.5 }}>{notificationArea}</Box>
+      )}
 
       <Paper
         square

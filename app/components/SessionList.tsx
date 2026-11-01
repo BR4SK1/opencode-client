@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import type { Theme } from "@mui/material/styles";
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import type { SessionListStatus, SessionVM } from "./ChatApp";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -64,6 +64,12 @@ interface SessionListProps {
   onOpen: (id: string) => void;
   onNew: () => void;
   onLogout: () => void;
+  /**
+   * In-flow notification stack rendered below the list (inside the root's
+   * safe-area padding). Only passed for the mobile variant; on desktop the
+   * chat column hosts the stack.
+   */
+  notificationArea?: ReactNode;
 }
 
 export default function SessionList({
@@ -75,6 +81,7 @@ export default function SessionList({
   onOpen,
   onNew,
   onLogout,
+  notificationArea,
 }: SessionListProps) {
   const [open, setOpen] = useState<Set<string>>(new Set());
 
@@ -393,6 +400,8 @@ export default function SessionList({
           )}
         </List>
       </Box>
+
+      {notificationArea && <Box sx={{ px: 1.5 }}>{notificationArea}</Box>}
 
       {variant === "desktop" && (
         <Box sx={{ p: 1, borderTop: 1, borderColor: "divider" }}>
