@@ -47,13 +47,42 @@ export function isSameDismissedMention(
   );
 }
 
-export function shouldBlockEnterDuringMentionSearch(input: {
+/**
+ * What the composer should do with a keydown. There is deliberately no "send"
+ * action, and Enter is deliberately absent from every branch: the visible Send
+ * button is the only way to submit, and Enter — with any modifiers, during IME
+ * composition, and whether attachment candidates are loading or visible —
+ * always maps to "default", letting the textarea insert its native newline.
+ * Attachment candidates are chosen by tap or Tab only.
+ */
+export type ComposerKeyAction =
+  | { type: "default" }
+  | { type: "select-candidate" }
+  | { type: "move-candidate"; delta: 1 | -1 }
+  | { type: "dismiss-mention" };
+
+export interface ComposerKeyInput {
   key: string;
-  shiftKey: boolean;
+  isComposing: boolean;
   hasActiveMention: boolean;
-  mentionState: "idle" | "loading" | "ready" | "error";
-}): boolean {
-  return input.key === "Enter" && !input.shiftKey && input.hasActiveMention && input.mentionState === "loading";
+  candidateCount: number;
+  /** Modifier state is part of the contract so tests can pin that no
+   * modifier combination changes Enter's outcome; no branch consults it. */
+  shiftKey?: boolean;
+  ctrlKey?: boolean;
+  metaKey?: boolean;
+  altKey?: boolean;
+}
+
+export function resolveComposerKeyAction(input: ComposerKeyInput): ComposerKeyAction {
+  if (input.isComposing) return { type: "default" };
+  if (input.hasActiveMention && input.candidateCount > 0) {
+    if (input.key === "ArrowDown") return { type: "move-candidate", delta: 1 };
+    if (input.key === "ArrowUp") return { type: "move-candidate", delta: -1 };
+    if (input.key === "Tab") return { type: "select-candidate" };
+  }
+  if (input.key === "Escape" && input.hasActiveMention) return { type: "dismiss-mention" };
+  return { type: "default" };
 }
 
 export function getComposerDraft(store: SessionComposerDrafts, sessionID: string): ComposerDraft {

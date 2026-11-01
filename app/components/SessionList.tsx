@@ -112,6 +112,11 @@ export default function SessionList({
         flexDirection: "column",
         height: "100%",
         overflow: "hidden",
+        // Safe-area bottom inset for the chat page's viewportFit: "cover"
+        // (app/page.tsx): keeps the mobile list's last rows and the desktop
+        // variant's bottom buttons out of the home-indicator / rounded-corner
+        // zone. No-op wherever the inset resolves to 0; device-dependent.
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
       }}
     >
       {variant === "desktop" && (

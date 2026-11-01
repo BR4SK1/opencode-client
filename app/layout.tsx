@@ -12,9 +12,10 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "opencode-client",
-    // "default" keeps iOS status-bar text readable in both themes and draws
-    // the bar above the content, so no safe-area layout changes are needed.
-    // The bar is tinted by the theme-color <meta> tags in `viewport` below.
+    // "default" keeps iOS status-bar text readable in both themes. Whether
+    // the bar overlaps content is device- and mode-dependent, so the chat
+    // page (the only route with viewportFit: "cover") pads its shell top by
+    // env(safe-area-inset-top) defensively.
     statusBarStyle: "default",
   },
 };

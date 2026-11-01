@@ -385,6 +385,13 @@ export default function FormDialog({ form, sessionID, onDone }: FormDialogProps)
             borderBottomLeftRadius: { xs: 0, sm: 4 },
             borderBottomRightRadius: { xs: 0, sm: 4 },
             m: 0,
+            // Bottom sheet sits flush with the viewport bottom on phones, so
+            // under the chat page's viewportFit: "cover" (app/page.tsx) it
+            // needs its own safe-area padding (portaled outside the app
+            // shell). No-op wherever an inset resolves to 0.
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            paddingLeft: "env(safe-area-inset-left, 0px)",
+            paddingRight: "env(safe-area-inset-right, 0px)",
           },
         },
       }}

@@ -6,7 +6,7 @@ import {
   isSameDismissedMention,
   prepareComposerDraftSubmission,
   removeComposerMention,
-  shouldBlockEnterDuringMentionSearch,
+  resolveComposerKeyAction,
   updateComposerDraft,
   type SessionComposerDrafts,
 } from "./composer-drafts";
@@ -92,10 +92,58 @@ describe("per-session composer drafts", () => {
     expect(isSameDismissedMention(dismissed, "session-b", { start: 4, query: "src/ma" })).toBe(false);
   });
 
-  it("blocks Enter from sending while the active mention search is loading", () => {
-    expect(shouldBlockEnterDuringMentionSearch({ key: "Enter", shiftKey: false, hasActiveMention: true, mentionState: "loading" })).toBe(true);
-    expect(shouldBlockEnterDuringMentionSearch({ key: "Enter", shiftKey: true, hasActiveMention: true, mentionState: "loading" })).toBe(false);
-    expect(shouldBlockEnterDuringMentionSearch({ key: "Enter", shiftKey: false, hasActiveMention: false, mentionState: "loading" })).toBe(false);
-    expect(shouldBlockEnterDuringMentionSearch({ key: "Enter", shiftKey: false, hasActiveMention: true, mentionState: "ready" })).toBe(false);
+  it("Enter is never hijacked: it always resolves to the native newline", () => {
+    // Enter appears in no branch of the resolver — there is no "send" or
+    // "select-candidate" outcome for it under any state, modifier, or IME
+    // condition. It must always fall through to the textarea's native
+    // newline insertion.
+    for (const input of [
+      { key: "Enter", isComposing: false, hasActiveMention: false, candidateCount: 0 },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 0 },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3 },
+      { key: "Enter", isComposing: true, hasActiveMention: false, candidateCount: 0 },
+      { key: "Enter", isComposing: true, hasActiveMention: true, candidateCount: 3 },
+      // No modifier combination changes Enter's outcome.
+      { key: "Enter", isComposing: false, hasActiveMention: false, candidateCount: 0, shiftKey: true },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3, shiftKey: true },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3, ctrlKey: true },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3, metaKey: true },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3, altKey: true },
+      { key: "Enter", isComposing: false, hasActiveMention: true, candidateCount: 3, ctrlKey: true, shiftKey: true, altKey: true },
+    ] as const) {
+      expect(resolveComposerKeyAction(input), JSON.stringify(input)).toEqual({ type: "default" });
+    }
+  });
+
+  it("keeps Tab-only keyboard selection when the candidate menu is open", () => {
+    const base = { isComposing: false, hasActiveMention: true, candidateCount: 3 };
+    expect(resolveComposerKeyAction({ ...base, key: "ArrowDown" })).toEqual({ type: "move-candidate", delta: 1 });
+    expect(resolveComposerKeyAction({ ...base, key: "ArrowUp" })).toEqual({ type: "move-candidate", delta: -1 });
+    expect(resolveComposerKeyAction({ ...base, key: "Tab" })).toEqual({ type: "select-candidate" });
+    // Enter must not select, even with candidates visible.
+    expect(resolveComposerKeyAction({ ...base, key: "Enter" })).toEqual({ type: "default" });
+    // Without candidates the menu is not open: navigation keys behave normally.
+    const noCandidates = { ...base, candidateCount: 0 };
+    expect(resolveComposerKeyAction({ ...noCandidates, key: "ArrowDown" })).toEqual({ type: "default" });
+    expect(resolveComposerKeyAction({ ...noCandidates, key: "Tab" })).toEqual({ type: "default" });
+    // Composition input never hijacks keys while the IME is active.
+    expect(resolveComposerKeyAction({ ...base, key: "ArrowDown", isComposing: true })).toEqual({ type: "default" });
+    expect(resolveComposerKeyAction({ ...base, key: "Tab", isComposing: true })).toEqual({ type: "default" });
+  });
+
+  it("keeps Escape dismissing the mention menu", () => {
+    expect(resolveComposerKeyAction({ key: "Escape", isComposing: false, hasActiveMention: true, candidateCount: 3 }))
+      .toEqual({ type: "dismiss-mention" });
+    expect(resolveComposerKeyAction({ key: "Escape", isComposing: false, hasActiveMention: true, candidateCount: 0 }))
+      .toEqual({ type: "dismiss-mention" });
+    expect(resolveComposerKeyAction({ key: "Escape", isComposing: false, hasActiveMention: false, candidateCount: 0 }))
+      .toEqual({ type: "default" });
+  });
+
+  it("leaves every other key to the textarea", () => {
+    for (const key of ["a", "Backspace", "ArrowLeft", "Shift", "Tab"]) {
+      expect(resolveComposerKeyAction({ key, isComposing: false, hasActiveMention: false, candidateCount: 0 }))
+        .toEqual({ type: "default" });
+    }
   });
 });
