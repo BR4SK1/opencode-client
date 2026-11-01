@@ -33,7 +33,12 @@ export function findActiveMentionQuery(
   const endOfLine = lineEnd < 0 ? text.length : lineEnd;
   let end = position;
   while (end < endOfLine && !/\s/u.test(text[end] ?? "")) end += 1;
-  return { start, end, query: text.slice(start + 1, position) };
+
+  const query = text.slice(start + 1, position);
+  // Any whitespace within the query — including a single space typed
+  // immediately after @ — terminates the active search.
+  if (/\s/u.test(query)) return null;
+  return { start, end, query };
 }
 
 export interface PromptMentionAttachment {

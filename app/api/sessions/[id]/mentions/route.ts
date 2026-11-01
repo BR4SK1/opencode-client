@@ -20,6 +20,6 @@ export async function GET(
     const candidates = await listMentionCandidates(opencode, location, query);
     return Response.json({ candidates });
   } catch {
-    return Response.json({ error: "Unable to search this session's project and references" }, { status: 502 });
+    return Response.json({ error: "Unable to search this session's references" }, { status: 502 });
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findActiveMentionQuery,
   isSafeRelativePath,
   isVisibleRelativePath,
   mentionSpanIsValid,
@@ -55,6 +56,27 @@ describe("prompt mention range tracking", () => {
   });
 });
 
+describe("active mention search termination", () => {
+  const noMentions: { mention: { start: number; end: number; text: string } }[] = [];
+
+  it("terminates the search on any whitespace in the query, including immediately after @", () => {
+    // A space typed directly after "@" must not start a search.
+    expect(findActiveMentionQuery("@ ", 2, noMentions)).toBeNull();
+    expect(findActiveMentionQuery("@\t", 2, noMentions)).toBeNull();
+    // A space anywhere between "@" and the caret terminates the search.
+    expect(findActiveMentionQuery("@docs then", 10, noMentions)).toBeNull();
+    expect(findActiveMentionQuery("@docs ", 6, noMentions)).toBeNull();
+    expect(findActiveMentionQuery("@docs\tfoo", 9, noMentions)).toBeNull();
+    expect(findActiveMentionQuery("see @docs and", 13, noMentions)).toBeNull();
+  });
+
+  it("still finds the active query when it contains no whitespace", () => {
+    expect(findActiveMentionQuery("@", 1, noMentions)).toEqual({ start: 0, end: 1, query: "" });
+    expect(findActiveMentionQuery("@docs", 5, noMentions)).toEqual({ start: 0, end: 5, query: "docs" });
+    expect(findActiveMentionQuery("see @docs", 9, noMentions)).toEqual({ start: 4, end: 9, query: "docs" });
+  });
+});
+
 describe("mention validation and session-location catalogue", () => {
   it("rejects traversal, browser URLs, malformed ranges, and forged aliases", () => {
     expect(isSafeRelativePath("src/file name.ts")).toBe(true);
@@ -82,22 +104,16 @@ describe("mention validation and session-location catalogue", () => {
     }])).toBeNull();
   });
 
-  it("lists via the session location, filters hidden entries, and preserves type collisions", async () => {
+  it("lists references only via the session location and never searches project files", async () => {
     const location = { directory: "/session/root" };
     const calls: Array<{ kind: string; location: { directory: string }; query?: string }> = [];
     const client: MentionCatalogClient = {
       file: {
-        find: async ({ query, location: scoped }) => {
-          calls.push({ kind: "find", location: scoped, query });
-          return { data: [
-            { path: "README", type: "file" },
-            { path: "README", type: "directory" },
-            { path: ".hidden", type: "file" },
-          ] };
+        find: async () => {
+          throw new Error("file.find must not be called for mention candidates");
         },
-        list: async ({ location: scoped }) => {
-          calls.push({ kind: "list", location: scoped });
-          return { data: [{ path: "README", type: "file" }, { path: ".hidden", type: "directory" }] };
+        list: async () => {
+          throw new Error("file.list must not be called for mention candidates");
         },
       },
       reference: {
@@ -113,33 +129,36 @@ describe("mention validation and session-location catalogue", () => {
     };
 
     const candidates = await listMentionCandidates(client, location, "read");
+    expect(calls).toHaveLength(1);
     expect(calls.every((call) => call.location === location)).toBe(true);
-    expect(calls.find((call) => call.kind === "find")?.query).toBe("read");
-    expect(candidates.map((item) => item.kind)).toEqual(["file", "directory", "reference"]);
-    expect(candidates.every((item) => item.label === "README")).toBe(true);
+    expect(candidates.map((item) => item.kind)).toEqual(["reference"]);
+    expect(candidates.map((item) => item.label)).toEqual(["README"]);
 
     const rootCandidates = await listMentionCandidates(client, location, "");
-    expect(calls.some((call) => call.kind === "list" && call.location === location)).toBe(true);
-    expect(rootCandidates.some((item) => item.label.startsWith("."))).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(rootCandidates.every((item) => item.kind === "reference")).toBe(true);
+    expect(rootCandidates.every((item) => item.label.startsWith("."))).toBe(false);
   });
 
-  it("keeps visible references represented when file results fill the candidate limit", async () => {
+  it("does not cap references by the file budget reserved for them", async () => {
     const client: MentionCatalogClient = {
       file: {
-        find: async () => ({ data: [] }),
-        list: async () => ({ data: Array.from({ length: 80 }, (_, index) => ({ path: `file-${index}.ts`, type: "file" as const })) }),
+        find: async () => {
+          throw new Error("file.find must not be called for mention candidates");
+        },
+        list: async () => {
+          throw new Error("file.list must not be called for mention candidates");
+        },
       },
       reference: {
-        list: async () => ({ data: [
-          { name: "design-docs", path: "/refs/design" },
-          { name: "api-docs", path: "/refs/api" },
-        ] }),
+        list: async () => ({
+          data: Array.from({ length: 80 }, (_, index) => ({ name: `ref-${index}`, path: `/refs/${index}` })),
+        }),
       },
     };
     const candidates = await listMentionCandidates(client, { directory: "/project" }, "");
     expect(candidates).toHaveLength(60);
-    expect(candidates.filter((candidate) => candidate.kind === "reference").map((candidate) => candidate.alias))
-      .toEqual(["design-docs", "api-docs"]);
+    expect(candidates.every((candidate) => candidate.kind === "reference")).toBe(true);
   });
 
   it("re-resolves paths and aliases and emits structured file URLs with mention metadata", async () => {
