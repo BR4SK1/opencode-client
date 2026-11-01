@@ -31,6 +31,11 @@ import {
   type ComposerDraftMention,
 } from "@/lib/composer-drafts";
 import {
+  scheduleMentionSearch,
+  sameMentionRequest,
+  type MentionSearchRequest,
+} from "@/lib/mention-search";
+import {
   AppBar,
   Avatar,
   Box,
@@ -494,6 +499,15 @@ export default function ChatView({
   const [menuOpen, setMenuOpen] = useState(false);
   const [draftError, setDraftError] = useState<{ sessionID: string; message: string } | null>(null);
   const dismissedMentionRef = useRef<{ sessionID: string; start: number; query: string } | null>(null);
+  // Live mirror of the active mention, updated synchronously in the same event
+  // that queues the state change. Passive-effect cleanup runs only after
+  // commit, so in-flight search results are validated against this ref — not
+  // the abort signal alone — before they may touch composer state.
+  const activeMentionRef = useRef<ActiveMentionQuery | null>(null);
+  const setActiveMentionSync = (next: ActiveMentionQuery | null) => {
+    activeMentionRef.current = next;
+    setActiveMention(next);
+  };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const activeOptionRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -505,45 +519,30 @@ export default function ChatView({
   } | null>(null);
   useEffect(() => {
     if (!activeMention) return;
-
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      const url = `/api/sessions/${encodeURIComponent(sessionID)}/mentions?q=${encodeURIComponent(activeMention.query)}`;
-      void fetch(url, { signal: controller.signal, credentials: "same-origin" })
-        .then(async (response) => {
-          if (!response.ok) throw new Error("Search failed");
-          return response.json() as Promise<{ candidates?: unknown }>;
-        })
-        .then((result) => {
-          if (controller.signal.aborted) return;
-          const rows = Array.isArray(result.candidates)
-            ? result.candidates.filter((item): item is MentionCandidate => {
-                if (!item || typeof item !== "object") return false;
-                const candidate = item as Partial<MentionCandidate>;
-                return (
-                  (candidate.kind === "file" || candidate.kind === "directory" || candidate.kind === "reference") &&
-                  typeof candidate.label === "string" &&
-                  typeof candidate.name === "string" &&
-                  (candidate.kind === "reference" ? typeof candidate.alias === "string" : typeof candidate.path === "string")
-                );
-              })
-            : [];
+    const request: MentionSearchRequest = { sessionID, ...activeMention };
+    return scheduleMentionSearch(
+      {
+        currentRequest: () => {
+          const live = activeMentionRef.current;
+          return live ? { sessionID, ...live } : null;
+        },
+        fetchMentionCandidates: (url, signal) =>
+          fetch(url, { signal, credentials: "same-origin" }).then(async (response) => {
+            if (!response.ok) throw new Error("Search failed");
+            return (await response.json()) as { candidates?: unknown };
+          }),
+        applyResults: (rows) => {
           setCandidates(rows);
           setMentionState("ready");
           setActiveCandidate(0);
-        })
-        .catch(() => {
-          if (!controller.signal.aborted) {
-            setCandidates([]);
-            setMentionState("error");
-          }
-        });
-    }, 180);
-
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
+        },
+        applyError: () => {
+          setCandidates([]);
+          setMentionState("error");
+        },
+      },
+      request,
+    );
   }, [activeMention, sessionID]);
 
   useEffect(() => {
@@ -565,7 +564,7 @@ export default function ChatView({
     const dismissed = dismissedMentionRef.current;
     if (dismissed?.sessionID === sessionID) {
       if (isSameDismissedMention(dismissed, sessionID, next)) {
-        setActiveMention(null);
+        setActiveMentionSync(null);
         setCandidates([]);
         setMentionState("idle");
         return;
@@ -573,15 +572,18 @@ export default function ChatView({
       dismissedMentionRef.current = null;
     }
 
+    // Compare against the synchronous ref so an update is never deduped away
+    // while uncommitted state still lags behind the live caret/query.
+    const live = activeMentionRef.current;
     if (
-      activeMention?.query === next?.query &&
-      activeMention?.start === next?.start &&
-      activeMention?.end === next?.end
+      live?.query === next?.query &&
+      live?.start === next?.start &&
+      live?.end === next?.end
     ) return;
     setCandidates([]);
     setMentionState(next ? "loading" : "idle");
     setActiveCandidate(0);
-    setActiveMention(next);
+    setActiveMentionSync(next);
   };
 
   const updateMentionAtCaret = (caret: number) => {
@@ -642,7 +644,11 @@ export default function ChatView({
   };
 
   const selectCandidate = (candidate: MentionCandidate) => {
-    if (!activeMention) return;
+    // Selection must belong to the request that is still live: a stale search
+    // response can never make its candidates selectable.
+    const live = activeMentionRef.current;
+    if (!activeMention || !live) return;
+    if (!sameMentionRequest({ sessionID, ...live }, { sessionID, ...activeMention })) return;
     const current = currentDraft();
     const mentionText = `@${candidate.label}`;
     const nextText = `${current.text.slice(0, activeMention.start)}${mentionText}${current.text.slice(activeMention.end)}`;
@@ -773,7 +779,7 @@ export default function ChatView({
         start: activeMention.start,
         query: activeMention.query,
       };
-      setActiveMention(null);
+      setActiveMentionSync(null);
       setCandidates([]);
       setMentionState("idle");
       setActiveCandidate(0);
@@ -1157,26 +1163,26 @@ export default function ChatView({
             }}
           >
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1.5, pt: 1 }}>
-              Project files, folders, and visible references
+              Visible references
             </Typography>
             {mentionState === "loading" && (
               <Stack role="status" aria-live="polite" direction="row" spacing={1} sx={{ alignItems: "center", p: 1.5 }}>
                 <CircularProgress size={16} />
-                <Typography variant="body2">Searching this session’s project…</Typography>
+                <Typography variant="body2">Searching this session’s references…</Typography>
               </Stack>
             )}
             {mentionState === "error" && (
               <Typography role="alert" color="error.main" variant="body2" sx={{ p: 1.5 }}>
-                Could not search files and references. Keep typing to retry.
+                Could not search references. Keep typing to retry.
               </Typography>
             )}
             {mentionState === "ready" && candidates.length === 0 && (
               <Typography role="status" aria-live="polite" color="text.secondary" variant="body2" sx={{ p: 1.5 }}>
-                No matching files, folders, or visible references.
+                No matching references.
               </Typography>
             )}
             {candidates.length > 0 && (
-              <List component="div" id="mention-options" role="listbox" aria-label="File and reference suggestions" dense sx={{ py: 0.5 }}>
+              <List component="div" id="mention-options" role="listbox" aria-label="Reference suggestions" dense sx={{ py: 0.5 }}>
                 {candidates.map((candidate, index) => (
                   <ListItemButton
                     id={`mention-option-${index}`}
@@ -1203,7 +1209,7 @@ export default function ChatView({
         )}
         <Box sx={{ flex: 1, minWidth: 0 }}>
           {mentions.length > 0 && (
-            <Stack direction="row" role="group" aria-label="Selected file attachments" sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
+            <Stack direction="row" role="group" aria-label="Selected attachments" sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
               {mentions.map((mention) => (
                 <Chip
                   key={mention.id}
@@ -1228,7 +1234,7 @@ export default function ChatView({
             multiline
             maxRows={4}
             fullWidth
-            placeholder="Message… (type @ to attach a project file or reference)"
+            placeholder="Message… (type @ to attach a reference)"
             value={text}
             onChange={(e) => handleTextChange(e.target.value, e.target.selectionStart ?? e.target.value.length)}
             disabled={sending}

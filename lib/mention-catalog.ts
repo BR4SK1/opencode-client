@@ -30,48 +30,28 @@ function displayName(value: string): string {
   return value.split("/").filter(Boolean).at(-1) ?? value;
 }
 
-/** Search only the given session's OpenCode location and visible configured references. */
+/**
+ * Search only the session's visible configured references.
+ * Project files and directories are intentionally excluded from the @ picker.
+ */
 export async function listMentionCandidates(
   client: MentionCatalogClient,
   location: { directory: string },
   query: string,
 ): Promise<MentionCandidate[]> {
-  const needle = query.trim();
-  const [entries, references] = await Promise.all([
-    needle
-      ? client.file.find({ query: needle, location, limit: 50 }).then((result) => result.data)
-      : client.file.list({ location }).then((result) => result.data),
-    client.reference.list({ location }).then((result) => result.data),
-  ]);
+  const needle = query.trim().toLocaleLowerCase();
+  const references = await client.reference.list({ location }).then((result) => result.data);
 
-  const files: MentionCandidate[] = entries.flatMap((entry) => {
-    if (!isVisibleRelativePath(entry.path)) return [];
-    if (entry.type !== "file" && entry.type !== "directory") return [];
-    return [{
-      kind: entry.type,
-      path: entry.path,
-      label: entry.path,
-      name: displayName(entry.path),
-    }];
-  });
-
-  const normalizedNeedle = needle.toLocaleLowerCase();
-  const refs: MentionCandidate[] = references.flatMap((reference) => {
+  return references.flatMap((reference): MentionCandidate[] => {
     if (!isVisibleReference(reference)) return [];
-    if (normalizedNeedle && !reference.name.toLocaleLowerCase().includes(normalizedNeedle)) return [];
+    if (needle && !reference.name.toLocaleLowerCase().includes(needle)) return [];
     return [{
       kind: "reference",
       alias: reference.name,
       label: reference.name,
       name: reference.name,
     }];
-  });
-
-  // Keep identical labels with different kinds: a file, a directory, and a
-  // reference alias can all legitimately collide and must remain distinguishable.
-  // Reserve up to ten slots for references so a large file result set cannot hide all of them.
-  const visibleReferenceCount = Math.min(refs.length, 10);
-  return [...files.slice(0, 60 - visibleReferenceCount), ...refs.slice(0, visibleReferenceCount)];
+  }).slice(0, 60);
 }
 
 export interface ResolvedPromptFile {
