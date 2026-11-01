@@ -1291,7 +1291,23 @@ export default function ChatApp() {
   const activeComposerDraft = activeId ? getComposerDraft(composerDrafts, activeId) : undefined;
 
   return (
-    <Box sx={{ display: "flex", height: "100dvh", overflow: "hidden" }}>
+    <Box
+      sx={{
+        display: "flex",
+        height: "100dvh",
+        overflow: "hidden",
+        // Safe-area insets for this page's viewportFit: "cover" (page.tsx).
+        // Each inset is a no-op wherever it resolves to 0; actual values are
+        // device- and context-dependent (browser vs installed PWA, notch
+        // side, keyboard state) and are not verified here — check on a real
+        // device. Top is defensive: statusBarStyle "default" is expected to
+        // keep content below the status bar, but this keeps the app bars
+        // clear if a device reports a top inset under cover.
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingLeft: "env(safe-area-inset-left, 0px)",
+        paddingRight: "env(safe-area-inset-right, 0px)",
+      }}
+    >
       {isDesktop && (
         <Box
           sx={{

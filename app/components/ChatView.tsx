@@ -25,7 +25,7 @@ import {
   isSameDismissedMention,
   prepareComposerDraftSubmission,
   removeComposerMention,
-  shouldBlockEnterDuringMentionSearch,
+  resolveComposerKeyAction,
   type ComposerDraft,
   type ComposerDraftContent,
   type ComposerDraftMention,
@@ -718,36 +718,34 @@ export default function ChatView({
     }
   };
 
+  // Enter never sends and never selects: it always falls through to the
+  // textarea's native newline insertion (preserving IME composition and
+  // native undo), even while attachment candidates are loading or visible.
+  // The visible Send button is the only way to submit; candidates are chosen
+  // by tap or Tab. resolveComposerKeyAction only claims keys that drive the
+  // attachment menu.
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.nativeEvent.isComposing) return;
-    if (shouldBlockEnterDuringMentionSearch({
+    const action = resolveComposerKeyAction({
       key: e.key,
-      shiftKey: e.shiftKey,
+      isComposing: e.nativeEvent.isComposing,
       hasActiveMention: Boolean(activeMention),
-      mentionState,
-    })) {
-      e.preventDefault();
+      candidateCount: candidates.length,
+      shiftKey: e.shiftKey,
+      ctrlKey: e.ctrlKey,
+      metaKey: e.metaKey,
+      altKey: e.altKey,
+    });
+    if (action.type === "default") return;
+    e.preventDefault();
+    if (action.type === "move-candidate") {
+      setActiveCandidate((index) => (index + action.delta + candidates.length) % candidates.length);
       return;
     }
-    if (activeMention && candidates.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setActiveCandidate((index) => (index + 1) % candidates.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setActiveCandidate((index) => (index - 1 + candidates.length) % candidates.length);
-        return;
-      }
-      if ((e.key === "Enter" || e.key === "Tab") && candidates[activeCandidate]) {
-        e.preventDefault();
-        selectCandidate(candidates[activeCandidate]);
-        return;
-      }
+    if (action.type === "select-candidate") {
+      if (candidates[activeCandidate]) selectCandidate(candidates[activeCandidate]);
+      return;
     }
-    if (e.key === "Escape" && activeMention) {
-      e.preventDefault();
+    if (activeMention) {
       dismissedMentionRef.current = {
         sessionID,
         start: activeMention.start,
@@ -757,11 +755,6 @@ export default function ChatView({
       setCandidates([]);
       setMentionState("idle");
       setActiveCandidate(0);
-      return;
-    }
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      void handleSend();
     }
   };
 
@@ -878,7 +871,19 @@ export default function ChatView({
         anchor="right"
         open={menuOpen}
         onClose={() => setMenuOpen(false)}
-        sx={{ "& .MuiDrawer-paper": { width: 288, maxWidth: "85vw" } }}
+        sx={{
+          // The drawer is portaled outside the app shell, so it needs its own
+          // safe-area padding for the chat page's viewportFit: "cover"
+          // (app/page.tsx). Each inset is a no-op wherever it resolves to 0.
+          "& .MuiDrawer-paper": {
+            width: 288,
+            maxWidth: "85vw",
+            paddingTop: "env(safe-area-inset-top, 0px)",
+            paddingBottom: "env(safe-area-inset-bottom, 0px)",
+            paddingLeft: "env(safe-area-inset-left, 0px)",
+            paddingRight: "env(safe-area-inset-right, 0px)",
+          },
+        }}
       >
         <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", p: 2 }}>
           <Typography variant="h6" component="h2">
@@ -1084,6 +1089,12 @@ export default function ChatView({
           borderTop: 1,
           borderColor: "divider",
           p: 1,
+          // Keeps the input clear of the iPhone home indicator and rounded
+          // display corners under this page's viewportFit: "cover"
+          // (app/page.tsx). The env() is a no-op wherever it resolves to 0;
+          // actual inset values are device- and context-dependent and not
+          // verified here — check on a real device.
+          pb: "calc(8px + env(safe-area-inset-bottom, 0px))",
           display: "flex",
           alignItems: "flex-end",
           gap: 1,
