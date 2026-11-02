@@ -1,5 +1,6 @@
 import { requireAuth } from "@/lib/api-auth";
 import { opencode } from "@/lib/opencode";
+import { pickDefaultAgent } from "@/lib/default-agent";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,16 @@ export async function POST() {
   const session = await requireAuth();
   if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
-  const created = await opencode.session.create({});
+  // New sessions start on this client's default agent when it is selectable in
+  // the server's default location (where client-created sessions live). When
+  // it is unavailable or the list cannot be read, create without an agent so
+  // new chat never breaks; the server then applies its own configured default
+  // at prompt time.
+  const agentList = await opencode.agent.list({}).catch(() => null);
+  const defaultAgent = pickDefaultAgent(agentList?.data);
+  const created = await opencode.session.create(
+    defaultAgent ? { agent: defaultAgent } : {},
+  );
   return Response.json(
     {
       session: {
