@@ -13,6 +13,11 @@ import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import type { FormInfo, ModelRef } from "@opencode/client";
 import type { PromptMentionAttachment } from "@/lib/prompt-mentions";
 import {
+  createAgentDefaultCoordinator,
+  DEFAULT_AGENT_ID,
+  type AgentDefaultCoordinator,
+} from "@/lib/default-agent";
+import {
   buildSessionAttention,
   createPermissionReconciler,
   createRetrySlot,
@@ -395,6 +400,15 @@ export default function ChatApp() {
   const sessionsRef = useRef<SessionVM[]>([]);
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Coordinates the automatic default against user switches and prompts; see
+  // createAgentDefaultCoordinator for the guarantees. Pure promise
+  // bookkeeping, so render-time creation is safe (same as createRetrySlot).
+  const agentCoordinatorRef = useRef<AgentDefaultCoordinator | null>(null);
+  if (agentCoordinatorRef.current == null) {
+    agentCoordinatorRef.current = createAgentDefaultCoordinator();
+  }
+  // Mirror of switchingAgent for callbacks that must not read render state.
+  const switchingAgentRef = useRef(false);
 
   useEffect(() => {
     activeIdRef.current = activeId;
@@ -510,8 +524,36 @@ export default function ChatApp() {
     );
   }, []);
 
+  // Performs the automatic default switch for a session and reports whether
+  // it was applied. Marking, serialization, and outcome tracking live in the
+  // coordinator; failures stay silent — the agent picker still shows the
+  // unselected state and the next agent-state fetch retries.
+  const applyDefaultAgent = useCallback(
+    async (id: string): Promise<boolean> => {
+      const generation = sessionGenerationRef.current;
+      try {
+        const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/agent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentId: DEFAULT_AGENT_ID }),
+        });
+        const result = asRecord(await res.json());
+        if (!res.ok) return false;
+        if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
+          applyAgentState(id, result);
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [apiFetch, applyAgentState],
+  );
+
   const fetchAgentState = useCallback(
     async (id: string, generation?: number) => {
+      const coordinator = agentCoordinatorRef.current;
+      const settleStateFetch = coordinator?.beginStateFetch(id);
       try {
         const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/agent`);
         if (!res.ok) return false;
@@ -523,12 +565,31 @@ export default function ChatApp() {
           return false;
         }
         applyAgentState(id, json);
+        // Sessions with no agent yet start on this client's default agent the
+        // first time their state is fetched here. The coordinator starts the
+        // attempt only for agentless sessions with the default agent
+        // selectable, never while a user switch is in flight, and at most one
+        // attempt at a time (a failure unmarks it for a later retry). The
+        // started switch is awaited by user switches and prompts, so an
+        // explicit selection and the first prompt cannot outrun it.
+        const state = asRecord(json);
+        const startDefault = coordinator?.noteAgentState({
+          sessionID: id,
+          currentAgent: str(state.currentAgent),
+          agents: Array.isArray(state.agents) ? state.agents.map(asRecord) : undefined,
+          switchInProgress: switchingAgentRef.current,
+        });
+        if (startDefault) {
+          void applyDefaultAgent(id).then(startDefault, () => startDefault(false));
+        }
         return true;
       } catch {
         return false;
+      } finally {
+        settleStateFetch?.();
       }
     },
-    [apiFetch, applyAgentState],
+    [apiFetch, applyAgentState, applyDefaultAgent],
   );
 
   const switchAgent = useCallback(
@@ -537,8 +598,14 @@ export default function ChatApp() {
       if (!id || !agentID) return;
       const generation = sessionGenerationRef.current;
       setSwitchingAgent(true);
+      switchingAgentRef.current = true;
       setError(null);
       try {
+        // An automatic default may still be in flight for this session. Wait
+        // for it to settle so this explicit selection is applied strictly
+        // after it — the user's choice always wins regardless of request
+        // timing. When no default was started this resolves immediately.
+        await agentCoordinatorRef.current?.defaultOutcome(id);
         const res = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/agent`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -561,6 +628,7 @@ export default function ChatApp() {
           setError("Failed to switch agent.");
         }
       } finally {
+        switchingAgentRef.current = false;
         if (activeIdRef.current === id && sessionGenerationRef.current === generation) {
           setSwitchingAgent(false);
         }
@@ -860,6 +928,7 @@ export default function ChatApp() {
       setMessageCursor(null);
       setLoadingOlderMessages(false);
       setSwitchingAgent(false);
+      switchingAgentRef.current = false;
       setSwitchingModel(false);
       setToolRunningCount(0);
       setAgents([]);
@@ -958,6 +1027,13 @@ export default function ChatApp() {
       );
       setSendingSessionIDs((current) => new Set(current).add(id));
       try {
+        // Hold the prompt until the session's agent state has settled and any
+        // automatic default for it has been applied, so an agentless session's
+        // first prompt cannot run before this client's default agent is in
+        // effect. When the default agent is unavailable or its switch fails,
+        // this resolves anyway and the server's own configured default
+        // applies rather than blocking the prompt indefinitely.
+        await agentCoordinatorRef.current?.whenAgentStateSettled(id);
         const res = await apiFetch(`/api/sessions/${id}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
