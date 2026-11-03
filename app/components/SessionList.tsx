@@ -21,6 +21,7 @@ import {
 import { useMemo, useState, type ReactNode } from "react";
 import type { SessionListStatus, SessionVM } from "./ChatApp";
 import { ThemeSelector } from "./ThemeSelector";
+import BrailleShading from "./BrailleShading";
 import { DARK_SCHEME_SELECTOR } from "../theme-selection";
 
 /*
@@ -159,18 +160,44 @@ export default function SessionList({
             borderColor: "divider",
             display: "flex",
             alignItems: "center",
+            // Positioning context + clipping for the decorative braille
+            // shading; the content wrapper below paints above it.
+            position: "relative",
+            overflow: "hidden",
           }}
         >
-          <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
-            opencode-client
-          </Typography>
-          <ThemeSelector />
+          <BrailleShading />
+          <Box
+            sx={{
+              position: "relative",
+              display: "flex",
+              alignItems: "center",
+              flex: 1,
+              minWidth: 0,
+            }}
+          >
+            <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
+              opencode-client
+            </Typography>
+            <ThemeSelector />
+          </Box>
         </Box>
       )}
 
       {variant === "mobile" && (
-        <AppBar position="static" color="default" elevation={0}>
-          <Toolbar>
+        <AppBar
+          position="static"
+          color="default"
+          elevation={0}
+          sx={{
+            // Positioning context + clipping for the decorative braille
+            // shading; the toolbar below paints above it.
+            position: "relative",
+            overflow: "hidden",
+          }}
+        >
+          <BrailleShading />
+          <Toolbar sx={{ position: "relative" }}>
             <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
               opencode-client
             </Typography>

@@ -19,8 +19,8 @@ export default function manifest(): MetadataRoute.Manifest {
     // Matches the theme-colour of the default theme (Current dark) in
     // app/layout.tsx; the runtime theme-color <meta> tag overrides it per
     // theme while the app is running.
-    background_color: "#1E1E1E",
-    theme_color: "#1E1E1E",
+    background_color: "#1C1917",
+    theme_color: "#1C1917",
     icons: [
       {
         src: "/icons/icon-192.png",

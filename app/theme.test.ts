@@ -18,16 +18,43 @@ describe("the four-colour-scheme theme", () => {
     expect(varsTheme.defaultColorScheme).toBe("dark");
   });
 
-  it("preserves the current dark appearance", () => {
+  it("applies the warm charcoal / cream dark appearance", () => {
     const dark = varsTheme.colorSchemes.dark!.palette;
     expect(dark.primary.main).toBe("#90CAF9");
-    expect(dark.background.default).toBe("#121212");
-    expect(dark.background.paper).toBe("#1E1E1E");
-    expect(dark.text.primary).toBe("#E6E8EB");
-    expect(dark.text.secondary).toBe("#9BA1A9");
-    expect(dark.divider).toBe("rgba(255,255,255,0.12)");
-    expect(dark.code.bg).toBe("#0F1317");
+    expect(dark.background.default).toBe("#1C1917");
+    expect(dark.background.paper).toBe("#292524");
+    expect(dark.text.primary).toBe("#EDE5D4");
+    expect(dark.text.secondary).toBe("#B8AC99");
+    expect(dark.divider).toBe("rgba(237,229,212,0.14)");
+    expect(dark.code.bg).toBe("#161310");
     expect(dark.mode).toBe("dark");
+  });
+
+  it("leaves the other three schemes untouched (distinct themes)", () => {
+    expect(varsTheme.colorSchemes.light!.palette.code.bg).toBe("#F6F8FA");
+    const sfLight = varsTheme.colorSchemes["sunfade-light"]!.palette;
+    expect(sfLight.background.default).toBe("#f8e9d2");
+    const sfDark = varsTheme.colorSchemes["sunfade-dark"]!.palette;
+    expect(sfDark.background.default).toBe("#28201b");
+  });
+
+  it("prefers Caskaydia Cove for content and Montserrat for labels", () => {
+    const typography = (theme as unknown as { typography: Record<string, { fontFamily?: string }> })
+      .typography;
+    expect(typography.fontFamily).toContain("CaskaydiaCove Nerd Font");
+    /* Content variants resolve to the base Caskaydia stack, never Montserrat. */
+    expect(typography.body1?.fontFamily).toContain("CaskaydiaCove");
+    expect(typography.body1?.fontFamily).not.toContain("Montserrat");
+    for (const variant of [
+      "h1",
+      "h6",
+      "subtitle2",
+      "overline",
+      "button",
+      "caption",
+    ]) {
+      expect(typography[variant]?.fontFamily).toContain("Montserrat");
+    }
   });
 
   it("preserves the current light appearance", () => {
