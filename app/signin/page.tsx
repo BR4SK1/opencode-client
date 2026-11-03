@@ -2,7 +2,7 @@ import { Avatar, Box, Card, CardContent, Typography } from "@mui/material";
 import SmartToy from "@mui/icons-material/SmartToy";
 import { demoMode } from "@/auth";
 import SignInButton from "./SignInButton";
-import { ThemeToggle } from "../components/ThemeToggle";
+import { ThemeSelector } from "../components/ThemeSelector";
 
 export default function SignInPage() {
   return (
@@ -27,7 +27,7 @@ export default function SignInPage() {
           right: "calc(12px + env(safe-area-inset-right, 0px))",
         }}
       >
-        <ThemeToggle />
+        <ThemeSelector />
       </Box>
       <Card sx={{ width: "100%", maxWidth: 360 }}>
         <CardContent

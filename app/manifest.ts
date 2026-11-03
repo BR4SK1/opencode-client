@@ -16,10 +16,11 @@ export default function manifest(): MetadataRoute.Manifest {
     start_url: "/",
     scope: "/",
     display: "standalone",
-    // Matches the light-mode theme-color in app/layout.tsx; the runtime
-    // theme-color <meta> tags override it per theme while the app is running.
-    background_color: "#ffffff",
-    theme_color: "#ffffff",
+    // Matches the theme-colour of the default theme (Current dark) in
+    // app/layout.tsx; the runtime theme-color <meta> tag overrides it per
+    // theme while the app is running.
+    background_color: "#1E1E1E",
+    theme_color: "#1E1E1E",
     icons: [
       {
         src: "/icons/icon-192.png",
