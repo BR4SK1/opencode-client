@@ -5,19 +5,40 @@ import { ThemeProvider } from "@mui/material/styles";
 import CssBaseline from "@mui/material/CssBaseline";
 import GlobalStyles from "@mui/material/GlobalStyles";
 import theme from "./theme";
-import { ThemeColorSync } from "./components/ThemeToggle";
+import { ThemeColorSync } from "./components/ThemeSelector";
+import {
+  DEFAULT_MODE,
+  THEME_COLOR_SCHEME_STORAGE_KEY,
+  THEME_MODE_STORAGE_KEY,
+} from "./theme-selection";
 
+/*
+ * Scrollbar and selection styling per colour scheme.  `color-scheme` itself is
+ * written by the theme (every colour scheme carries its `palette.mode`), so it
+ * is not repeated here.
+ */
 const globalStyles = (
   <GlobalStyles
     styles={{
-      html: { colorScheme: "light", scrollbarWidth: "thin" },
+      html: { scrollbarWidth: "thin" },
       "html.dark": {
-        colorScheme: "dark",
         scrollbarWidth: "thin",
         scrollbarColor: "rgba(155,161,169,0.4) transparent",
       },
+      "html.sunfade-dark": {
+        scrollbarWidth: "thin",
+        scrollbarColor: "rgba(234,211,176,0.35) transparent",
+      },
       "::selection": { backgroundColor: "rgba(25,118,210,0.22)" },
       "html.dark ::selection": { backgroundColor: "rgba(144,202,249,0.30)" },
+      "html.sunfade-light ::selection": {
+        backgroundColor: "#4e5d61",
+        color: "#fff8e9",
+      },
+      "html.sunfade-dark ::selection": {
+        backgroundColor: "#879a9a",
+        color: "#1d1916",
+      },
       "@keyframes oc-caret-blink": {
         "50%": { opacity: 0.15 },
       },
@@ -33,8 +54,9 @@ export default function Providers({
   return (
     <ThemeProvider
       theme={theme}
-      defaultMode="system"
-      modeStorageKey="oc-theme-mode"
+      defaultMode={DEFAULT_MODE}
+      modeStorageKey={THEME_MODE_STORAGE_KEY}
+      colorSchemeStorageKey={THEME_COLOR_SCHEME_STORAGE_KEY}
       disableTransitionOnChange
     >
       <CssBaseline />

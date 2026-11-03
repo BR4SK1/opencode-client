@@ -18,28 +18,52 @@ import {
   Toolbar,
   Typography,
 } from "@mui/material";
-import { alpha } from "@mui/material/styles";
-import type { Theme } from "@mui/material/styles";
 import { useMemo, useState, type ReactNode } from "react";
 import type { SessionListStatus, SessionVM } from "./ChatApp";
-import { ThemeToggle } from "./ThemeToggle";
+import { ThemeSelector } from "./ThemeSelector";
+import { DARK_SCHEME_SELECTOR } from "../theme-selection";
 
-function statusRowSx(status: SessionListStatus) {
-  return (theme: Theme) => {
-    const color = status === "running" ? theme.palette.success.main : theme.palette.warning.main;
-    const baseAlpha = theme.palette.mode === "dark" ? 0.2 : 0.1;
-    return {
-      backgroundColor: alpha(color, baseAlpha),
-      "&:hover": {
-        backgroundColor: alpha(color, baseAlpha + 0.06),
-      },
-      "&.Mui-selected": {
-        backgroundColor: alpha(color, baseAlpha + 0.08),
-      },
-      "&.Mui-selected:hover": {
-        backgroundColor: alpha(color, baseAlpha + 0.13),
-      },
-    };
+/*
+ * Status row tint.  The accent colour and its alpha are taken from the active
+ * colour scheme's CSS variables — never from theme.palette.*, which under
+ * MUI's CSS-variable setup is pinned to the default scheme (Current dark) and
+ * would not follow Sunfade.  Light schemes use the lighter tints; both dark
+ * schemes (via DARK_SCHEME_SELECTOR) use the stronger ones, preserving the
+ * previous light/dark alpha tuning.
+ */
+export function statusRowSx(status: SessionListStatus) {
+  const channel =
+    status === "running"
+      ? "--mui-palette-success-mainChannel"
+      : "--mui-palette-warning-mainChannel";
+  const tint = (a: number) => `rgb(var(${channel}) / ${a})`;
+  return {
+    backgroundColor: tint(0.1),
+    "&:hover": { backgroundColor: tint(0.16) },
+    "&.Mui-selected": { backgroundColor: tint(0.18) },
+    "&.Mui-selected:hover": { backgroundColor: tint(0.23) },
+    [DARK_SCHEME_SELECTOR]: {
+      backgroundColor: tint(0.2),
+      "&:hover": { backgroundColor: tint(0.26) },
+      "&.Mui-selected": { backgroundColor: tint(0.28) },
+      "&.Mui-selected:hover": { backgroundColor: tint(0.33) },
+    },
+  };
+}
+
+/*
+ * Status caption colour.  Light schemes take the deep accent shade (readable
+ * on pale backgrounds), dark schemes the pale shade; both resolved through
+ * the active scheme's CSS variables.
+ */
+export function statusCaptionSx(status: SessionListStatus) {
+  const accent = status === "running" ? "success" : "warning";
+  return {
+    fontWeight: 600,
+    color: `var(--mui-palette-${accent}-dark)`,
+    [DARK_SCHEME_SELECTOR]: {
+      color: `var(--mui-palette-${accent}-light)`,
+    },
   };
 }
 
@@ -140,7 +164,7 @@ export default function SessionList({
           <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
             opencode-client
           </Typography>
-          <ThemeToggle />
+          <ThemeSelector />
         </Box>
       )}
 
@@ -150,7 +174,7 @@ export default function SessionList({
             <Typography variant="h6" component="h1" sx={{ flexGrow: 1 }}>
               opencode-client
             </Typography>
-            <ThemeToggle />
+            <ThemeSelector />
             <IconButton
               aria-label="New chat"
               size="large"
@@ -236,23 +260,8 @@ export default function SessionList({
                         <Typography variant="caption" color="text.secondary">
                           {relativeTime(s.updated)}
                         </Typography>
-                        {statusLabel && (
-                          <Typography
-                            variant="caption"
-                            sx={{
-                              fontWeight: 600,
-                              color: (theme) => {
-                                if (status === "running") {
-                                  return theme.palette.mode === "dark"
-                                    ? "success.light"
-                                    : "success.dark";
-                                }
-                                return theme.palette.mode === "dark"
-                                  ? "warning.light"
-                                  : "warning.dark";
-                              },
-                            }}
-                          >
+                        {statusLabel && status && (
+                          <Typography variant="caption" sx={statusCaptionSx(status)}>
                             {statusLabel}
                           </Typography>
                         )}
@@ -354,22 +363,10 @@ export default function SessionList({
                                     <Typography variant="caption" color="text.secondary">
                                       {relativeTime(c.updated)}
                                     </Typography>
-                                    {childStatusLabel && (
+                                    {childStatusLabel && childStatus && (
                                       <Typography
                                         variant="caption"
-                                        sx={{
-                                          fontWeight: 600,
-                                          color: (theme) => {
-                                            if (childStatus === "running") {
-                                              return theme.palette.mode === "dark"
-                                                ? "success.light"
-                                                : "success.dark";
-                                            }
-                                            return theme.palette.mode === "dark"
-                                              ? "warning.light"
-                                              : "warning.dark";
-                                          },
-                                        }}
+                                        sx={statusCaptionSx(childStatus)}
                                       >
                                         {childStatusLabel}
                                       </Typography>

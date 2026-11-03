@@ -60,7 +60,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { MessageVM, PartVM } from "./ChatApp";
-import { ThemeToggle } from "./ThemeToggle";
+import { ThemeSelector } from "./ThemeSelector";
 import { CodeBlock, InlineCode, parseSegments } from "./CodeBlock";
 
 function toolChipIcon(status: string): string {
@@ -874,7 +874,7 @@ export default function ChatView({
             </FormControl>
           </Box>
           <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center" }}>
-            <ThemeToggle />
+            <ThemeSelector />
             <IconButton
               aria-label="Refresh messages"
               size="large"
@@ -1002,8 +1002,8 @@ export default function ChatView({
           </ListItemButton>
           <Divider component="li" />
           <ListItemButton component="div" sx={{ minHeight: 64, cursor: "default" }}>
-            <ListItemText primary="Theme" secondary="Cycle system, light, and dark" />
-            <ThemeToggle />
+            <ListItemText primary="Theme" secondary="Current light, Current dark, Sunfade light, Sunfade dark" />
+            <ThemeSelector />
           </ListItemButton>
         </List>
       </Drawer>
