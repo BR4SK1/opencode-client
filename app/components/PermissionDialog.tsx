@@ -66,6 +66,14 @@ export default function PermissionDialog({
             borderTopRightRadius: { xs: 16, sm: 4 },
             borderBottomLeftRadius: { xs: 0, sm: 4 },
             borderBottomRightRadius: { xs: 0, sm: 4 },
+            // Double frame: an outer hairline border plus an inner hairline
+            // (outline drawn a few pixels inside the edge). Follows the
+            // radius on modern browsers.
+            border: "1px solid",
+            borderColor: "divider",
+            outline: "1px solid",
+            outlineColor: "divider",
+            outlineOffset: -5,
             m: 0,
             // Bottom sheet sits flush with the viewport bottom on phones, so
             // under the chat page's viewportFit: "cover" (app/page.tsx) it
@@ -78,7 +86,7 @@ export default function PermissionDialog({
         },
       }}
     >
-      <Stack sx={{ p: 2.5, gap: 1.25, minWidth: 0 }}>
+      <Stack sx={{ p: 2, gap: 1.25, minWidth: 0 }}>
         <Typography variant="h6">Permission requested</Typography>
         <Typography variant="body1" sx={{ fontWeight: "bold", overflowWrap: "anywhere" }}>
           {permission.action}

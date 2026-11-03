@@ -61,7 +61,8 @@ import {
 } from "@mui/material";
 import type { MessageVM, PartVM } from "./ChatApp";
 import { ThemeSelector } from "./ThemeSelector";
-import { CodeBlock, InlineCode, parseSegments } from "./CodeBlock";
+import BrailleShading from "./BrailleShading";
+import MarkdownText from "./MarkdownText";
 
 function toolChipIcon(status: string): string {
   if (status === "completed") return "✓";
@@ -80,84 +81,6 @@ function readableToolStatus(status: string): string {
 function formatTime(time: number): string {
   const ms = time < 1e12 ? time * 1000 : time;
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-/** Renders plain text with **bold** and `inline code` runs. Bold wrapping is
- * applied first, then inline-code splitting runs within each bold/plain piece,
- * so `code` inside bold still works. Single `*` is left as literal text. */
-function renderInline(text: string, extra?: React.ReactNode): React.ReactNode[] {
-  const nodes: React.ReactNode[] = [];
-  const boldParts = text.split(/(\*\*[^*\n]+\*\*)/g);
-  boldParts.forEach((part, bi) => {
-    const bold = bi % 2 === 1 && /^\*\*[^*\n]+\*\*$/.test(part);
-    const inner = bold ? part.slice(2, -2) : part;
-    const codeParts = inner.split(/`([^`\n]+)`/g);
-    const runs: React.ReactNode[] = codeParts.map((piece, i) =>
-      i % 2 === 1 ? <InlineCode key={`ic-${bi}-${i}`}>{piece}</InlineCode> : piece,
-    );
-    if (bold) {
-      nodes.push(
-        <Box key={`b-${bi}`} component="strong" sx={{ fontWeight: 700 }}>
-          {runs}
-        </Box>,
-      );
-    } else {
-      nodes.push(...runs);
-    }
-  });
-  if (extra !== undefined) nodes.push(extra);
-  return nodes;
-}
-
-function SegmentedText({
-  text,
-  caret,
-}: {
-  text: string;
-  caret?: boolean;
-}) {
-  const segments = parseSegments(text);
-  if (segments.length === 0) return null;
-
-  const lastTextIndex = segments.reduce(
-    (acc, s, i) => (s.kind === "text" ? i : acc),
-    -1,
-  );
-  // Keyed because the caret is appended into the renderInline node array passed
-  // to Typography, which requires keys for array children.
-  const caretNode = caret ? (
-    <Box
-      key="oc-caret"
-      component="span"
-      sx={{ color: "primary.main", animation: "oc-caret-blink 1s steps(1) infinite" }}
-    >
-      ▍
-    </Box>
-  ) : undefined;
-
-  return (
-    <>
-      {segments.map((s, i) => {
-        if (s.kind === "code") {
-          return <CodeBlock key={i} code={s.code} lang={s.lang} />;
-        }
-        return (
-          <Typography
-            key={i}
-            variant="body1"
-            sx={{
-              whiteSpace: "pre-wrap",
-              overflowWrap: "anywhere",
-              lineHeight: 1.6,
-            }}
-          >
-            {renderInline(s.text, i === lastTextIndex ? caretNode : undefined)}
-          </Typography>
-        );
-      })}
-      {caret && lastTextIndex === -1 && caretNode}
-    </>
-  );
 }
 
 function AssistantHeader({ time, agent }: { time?: number; agent?: string }) {
@@ -179,19 +102,15 @@ function AssistantHeader({ time, agent }: { time?: number; agent?: string }) {
 }
 
 function AssistantBubble({ children }: { children: React.ReactNode }) {
+  /*
+   * Agent responses are plain full-width text: no chat bubble, no border, no
+   * background — only a small inset from the screen edge (owned by the
+   * message list padding). Markdown segmentation is untouched.
+   */
   return (
-    <Paper
-      variant="outlined"
-      sx={{
-        width: "100%",
-        px: 1.75,
-        py: 1.25,
-        borderRadius: 2.5,
-        borderBottomLeftRadius: 0.75,
-      }}
-    >
-      <Stack spacing={1}>{children}</Stack>
-    </Paper>
+    <Stack spacing={1} sx={{ width: "100%" }}>
+      {children}
+    </Stack>
   );
 }
 
@@ -224,13 +143,14 @@ function ToolParts({
                 <ChevronRight sx={{ fontSize: 18, verticalAlign: "middle", mr: -0.5 }} />
               </>
             }
-            sx={{ minHeight: 44, gap: 0.5 }}
+            sx={{ minHeight: 44, gap: 0.5, borderRadius: 0 }}
           />
         ) : (
           <Chip
             key={t.id}
             size="small"
             label={`${t.name} ${toolChipIcon(t.status)}`}
+            sx={{ borderRadius: 0 }}
           />
         );
       })}
@@ -279,7 +199,7 @@ function ActivitySummary({
         width: "100%",
         border: 1,
         borderColor: "divider",
-        borderRadius: 2,
+        borderRadius: 0,
         overflow: "hidden",
         bgcolor: "background.paper",
       }}
@@ -336,6 +256,7 @@ function ActivitySummary({
                     height: 22,
                     maxWidth: 160,
                     flexShrink: 0,
+                    borderRadius: 0,
                     "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis", px: 0.75 },
                   }}
                 />
@@ -787,9 +708,29 @@ export default function ChatView({
   };
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      <AppBar position="static" color="default" elevation={0} sx={{ borderBottom: 1, borderColor: "divider" }}>
-        <Toolbar>
+    <Box
+      sx={{
+        display: "flex",
+        flexDirection: "column",
+        height: "100%",
+        overflow: "hidden",
+      }}
+    >
+      <AppBar
+        position="static"
+        color="default"
+        elevation={0}
+        sx={{
+          borderBottom: 1,
+          borderColor: "divider",
+          // Positioning context + clipping for the decorative braille
+          // shading; the toolbar below paints above it.
+          position: "relative",
+          overflow: "hidden",
+        }}
+      >
+        <BrailleShading />
+        <Toolbar sx={{ position: "relative" }}>
           {onBack && (
             <IconButton
               aria-label="Back to sessions"
@@ -913,7 +854,7 @@ export default function ChatView({
           },
         }}
       >
-        <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", p: 2 }}>
+        <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between", p: 1.5 }}>
           <Typography variant="h6" component="h2">
             Chat menu
           </Typography>
@@ -922,7 +863,7 @@ export default function ChatView({
           </IconButton>
         </Stack>
         <Divider />
-        <Box sx={{ px: 2, py: 1.5 }}>
+        <Box sx={{ px: 1.5, py: 1.5 }}>
           <Typography variant="subtitle2" sx={{ mb: 1 }}>
             Agent
           </Typography>
@@ -1018,14 +959,15 @@ export default function ChatView({
           overflowY: "auto",
           overflowX: "hidden",
           scrollbarWidth: "thin",
-          px: 2,
-          py: 2,
+          // Small screen-edge padding; agent responses run the full width.
+          px: 1,
+          py: 1,
           display: "flex",
           flexDirection: "column",
-          gap: 1.5,
+          gap: 1.25,
         }}
       >
-        <Box sx={{ width: "100%", maxWidth: 760, mx: "auto", display: "flex", flexDirection: "column", gap: 1.5 }}>
+        <Box sx={{ width: "100%", display: "flex", flexDirection: "column", gap: 1.25 }}>
           {hasOlderMessages && (
             <Button
               size="small"
@@ -1061,13 +1003,14 @@ export default function ChatView({
               <Stack key={row.message.id} spacing={0.25} sx={{ alignItems: "flex-end" }}>
                 <Paper
                   sx={{
-                    maxWidth: "85%",
+                    // 85% of the column on phones; the absolute cap keeps the
+                    // bubble reasonable once the column runs full width.
+                    maxWidth: "min(85%, 720px)",
                     bgcolor: "primary.main",
                     color: "primary.contrastText",
-                    px: 1.75,
-                    py: 1.25,
-                    borderRadius: 2.5,
-                    borderBottomRightRadius: 0.75,
+                    px: 1.25,
+                    py: 1,
+                    borderRadius: 0,
                   }}
                 >
                   <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
@@ -1081,16 +1024,22 @@ export default function ChatView({
                 )}
               </Stack>
             ) : (
-              <Stack key={row.message.id} spacing={0.5} sx={{ alignItems: "flex-start", maxWidth: "85%" }}>
+              <Stack key={row.message.id} spacing={0.5} sx={{ width: "100%" }}>
                 <AssistantHeader
                   time={row.message.time}
                   agent={row.message.agent ? agentNames[row.message.agent] || row.message.agent : undefined}
                 />
                 <AssistantBubble>
+                  {/* Each text part is one Markdown document (MarkdownText);
+                   * the caret rides on the last text part while streaming —
+                   * MarkdownText appends the caret character to the source so
+                   * it sits at the typing position, including inside an
+                   * unfinished fenced code block, which CommonMark still
+                   * parses as a code block. */}
                   {row.message.parts
                     .filter((p): p is Extract<PartVM, { kind: "text" }> => p.kind === "text")
                     .map((p, i, textParts) => (
-                      <SegmentedText
+                      <MarkdownText
                         key={i}
                         text={p.text}
                         caret={row.message.kind === "assistant" && row.message.streaming && i === textParts.length - 1}
@@ -1120,7 +1069,7 @@ export default function ChatView({
         sx={{
           borderTop: 1,
           borderColor: "divider",
-          p: 1,
+          p: 0.75,
           // Keeps the input clear of the iPhone home indicator and rounded
           // display corners under this page's viewportFit: "cover"
           // (app/page.tsx). The env() is a no-op wherever it resolves to 0;

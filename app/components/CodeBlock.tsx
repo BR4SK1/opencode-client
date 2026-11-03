@@ -52,30 +52,6 @@ const ALIASES: Record<string, string> = {
   md: "markdown",
 };
 
-export type Segment =
-  | { kind: "text"; text: string }
-  | { kind: "code"; lang: string | undefined; code: string };
-
-/**
- * Splits assistant text into text and fenced-code segments. The `(?:```|$)`
- * tail also matches an unterminated final fence, which happens while streaming.
- */
-export function parseSegments(text: string): Segment[] {
-  const out: Segment[] = [];
-  const re = /```([A-Za-z0-9_-]*)[^\n]*\n([\s\S]*?)(?:```|$)/g;
-  let last = 0;
-  for (;;) {
-    const m = re.exec(text);
-    if (m === null) break;
-    if (m.index > last) out.push({ kind: "text", text: text.slice(last, m.index) });
-    out.push({ kind: "code", lang: m[1] || undefined, code: m[2] });
-    last = m.index + m[0].length;
-    if (m[0].length === 0) break;
-  }
-  if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
-  return out;
-}
-
 interface CodeBlockProps {
   code: string;
   lang?: string;

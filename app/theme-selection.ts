@@ -30,7 +30,7 @@ export const THEME_COLOR_SCHEME_STORAGE_KEY = "oc-theme-scheme";
 /** Mode used when nothing is saved; also the pre-hydration fallback. */
 export const DEFAULT_MODE = "dark";
 /** Browser-chrome colour used when the scheme cannot be resolved. */
-export const DEFAULT_THEME_COLOR = "#1E1E1E";
+export const DEFAULT_THEME_COLOR = "#1C1917";
 
 /** The four colour schemes registered in app/theme.ts. */
 export type SchemeName = "light" | "dark" | "sunfade-light" | "sunfade-dark";
@@ -39,7 +39,7 @@ export type SchemeName = "light" | "dark" | "sunfade-light" | "sunfade-dark";
 export const THEME_COLOR_BY_SCHEME: Record<SchemeName, string> = {
   light: "#ffffff",
   "sunfade-light": "#f8e9d2",
-  dark: "#1E1E1E",
+  dark: "#1C1917",
   "sunfade-dark": "#28201b",
 };
 

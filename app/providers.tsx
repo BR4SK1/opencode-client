@@ -23,7 +23,7 @@ const globalStyles = (
       html: { scrollbarWidth: "thin" },
       "html.dark": {
         scrollbarWidth: "thin",
-        scrollbarColor: "rgba(155,161,169,0.4) transparent",
+        scrollbarColor: "rgba(184,172,153,0.4) transparent",
       },
       "html.sunfade-dark": {
         scrollbarWidth: "thin",
@@ -42,6 +42,9 @@ const globalStyles = (
       "@keyframes oc-caret-blink": {
         "50%": { opacity: 0.15 },
       },
+      // Markdown block spacing resets, scoped to MarkdownText's container.
+      ".oc-md > :first-child": { marginTop: 0 },
+      ".oc-md > :last-child": { marginBottom: 0 },
     }}
   />
 );

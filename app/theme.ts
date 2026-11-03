@@ -1,7 +1,39 @@
-import { createTheme } from "@mui/material/styles";
+import {
+  createTheme,
+  type ThemeOptions,
+} from "@mui/material/styles";
 
+/*
+ * Font stacks.  Caskaydia Cove (the Nerd Font build of Cascadia Code) is the
+ * preferred interface and content face; Montserrat is reserved for labels and
+ * titles.  Neither is bundled: there is no font-loading mechanism in this
+ * project, so these stacks depend on the fonts being available locally on the
+ * visitor's device and otherwise fall back to the system faces below.
+ */
 export const monoStack =
-  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+  '"CaskaydiaCove Nerd Font", "CaskaydiaCove NF", "CaskaydiaCove Nerd Font Mono", "Cascadia Code", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace';
+
+export const labelStack =
+  '"Montserrat", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+
+/*
+ * Labels and titles (headings, subtitling, overlines, buttons, captions) use
+ * Montserrat; everything else — chat content, code, form inputs — inherits
+ * the Caskaydia stack through the base fontFamily.
+ */
+const labelVariants = [
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "subtitle1",
+  "subtitle2",
+  "overline",
+  "button",
+  "caption",
+] as const;
 
 interface CodePalette {
   bg: string;
@@ -56,10 +88,10 @@ const lightCode: CodePalette = {
 };
 
 const darkCode: CodePalette = {
-  bg: "#0F1317",
-  border: "rgba(240,246,252,0.12)",
-  text: "#E6E8EB",
-  inlineBg: "rgba(139,148,158,0.20)",
+  bg: "#161310",
+  border: "rgba(237,229,212,0.14)",
+  text: "#EDE5D4",
+  inlineBg: "rgba(184,172,153,0.20)",
   keyword: "#FF7B72",
   string: "#A5D6FF",
   comment: "#8B949E",
@@ -165,14 +197,26 @@ const sunfadeDarkBase = createTheme({
 const theme = createTheme({
   cssVariables: { colorSchemeSelector: "class" },
   defaultColorScheme: "dark",
+  typography: {
+    fontFamily: monoStack,
+    ...Object.fromEntries(
+      labelVariants.map((variant) => [variant, { fontFamily: labelStack }]),
+    ),
+  } as ThemeOptions["typography"],
   colorSchemes: {
     light: { palette: { code: lightCode } },
     dark: {
       palette: {
         primary: { main: "#90CAF9", contrastText: "#0B2545" },
-        background: { default: "#121212", paper: "#1E1E1E" },
-        divider: "rgba(255,255,255,0.12)",
-        text: { primary: "#E6E8EB", secondary: "#9BA1A9" },
+        /*
+         * Warm charcoal surfaces with cream text, aligned with the title
+         * bar's look instead of the former neutral grey (which read brown
+         * next to it).  The blue accent stays so Current dark keeps its own
+         * identity beside the Sunfade schemes.
+         */
+        background: { default: "#1C1917", paper: "#292524" },
+        divider: "rgba(237,229,212,0.14)",
+        text: { primary: "#EDE5D4", secondary: "#B8AC99" },
         code: darkCode,
       },
     },
