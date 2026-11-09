@@ -122,21 +122,26 @@ const sunfadeLightCode: CodePalette = {
   delBg: "rgba(96,46,37,0.12)",
 };
 
+/*
+ * Sunfade dark follows the same Gruvbox-inspired greys as the UI palette
+ * below: a neutral charcoal code well (#1d2021) with warm-grey chrome and
+ * cream text, instead of the former sepia/brown surfaces.
+ */
 const sunfadeDarkCode: CodePalette = {
-  bg: "#1d1916",
-  border: "#4e392e",
-  text: "#ead3b0",
-  inlineBg: "rgba(167,135,98,0.20)",
-  keyword: "#b28aa0",
-  string: "#a1a45b",
-  comment: "#ead3b0",
-  number: "#dfa54c",
-  function: "#89a3a4",
-  attr: "#91a586",
-  tag: "#e58349",
-  meta: "#e4775f",
-  addBg: "rgba(161,164,91,0.16)",
-  delBg: "rgba(228,119,95,0.12)",
+  bg: "#1d2021",
+  border: "#45403d",
+  text: "#ebdbb2",
+  inlineBg: "rgba(168,153,132,0.24)",
+  keyword: "#d3869b",
+  string: "#a9b665",
+  comment: "#9c9080",
+  number: "#d8a657",
+  function: "#89b482",
+  attr: "#7daea3",
+  tag: "#e78a4e",
+  meta: "#9c9080",
+  addBg: "rgba(169,182,101,0.16)",
+  delBg: "rgba(230,104,104,0.12)",
 };
 
 /*
@@ -168,24 +173,32 @@ const sunfadeLightBase = createTheme({
   },
 }).palette;
 
+/*
+ * Sunfade dark keeps the family's warm-muted accents and cream text, but the
+ * surfaces trade the former sepia/browns for restrained Gruvbox-style greys:
+ * neutral #282828 for the page, warm grey #3c3836 for paper, charcoal #1d2021
+ * for code wells.  The accents stay desaturated and warm, and the primary is
+ * a muted blue-grey rather than Current dark's bright sky blue, so the two
+ * dark themes remain distinct at a glance.
+ */
 const sunfadeDarkBase = createTheme({
   palette: {
     mode: "dark",
     code: sunfadeDarkCode,
-    primary: { main: "#879a9a", contrastText: "#1d1916" },
-    secondary: { main: "#b18d98", contrastText: "#1d1916" },
-    error: { main: "#d1826b", contrastText: "#1d1916" },
-    warning: { main: "#c38c3a", contrastText: "#1d1916" },
-    success: { main: "#979b5b", contrastText: "#1d1916" },
-    info: { main: "#879d82", contrastText: "#1d1916" },
-    background: { default: "#28201b", paper: "#3b2d25" },
-    text: { primary: "#ead3b0", secondary: "#d5b991", disabled: "#a78762" },
-    divider: "#4e392e",
+    primary: { main: "#83a598", contrastText: "#1d2021" },
+    secondary: { main: "#d3869b", contrastText: "#1d2021" },
+    error: { main: "#e66868", contrastText: "#1d2021" },
+    warning: { main: "#d8a657", contrastText: "#1d2021" },
+    success: { main: "#a9b665", contrastText: "#1d2021" },
+    info: { main: "#89b482", contrastText: "#1d2021" },
+    background: { default: "#282828", paper: "#3c3836" },
+    text: { primary: "#ebdbb2", secondary: "#d5c4a1", disabled: "#a89984" },
+    divider: "#45403d",
     action: {
-      hover: "#ead3b014",
-      selected: "#ead3b029",
-      disabled: "#a78762",
-      disabledBackground: "#332720",
+      hover: "#ebdbb214",
+      selected: "#ebdbb229",
+      disabled: "#a89984",
+      disabledBackground: "#32302f",
     },
   },
 }).palette;

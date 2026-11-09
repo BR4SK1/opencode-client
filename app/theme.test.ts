@@ -35,7 +35,7 @@ describe("the four-colour-scheme theme", () => {
     const sfLight = varsTheme.colorSchemes["sunfade-light"]!.palette;
     expect(sfLight.background.default).toBe("#f8e9d2");
     const sfDark = varsTheme.colorSchemes["sunfade-dark"]!.palette;
-    expect(sfDark.background.default).toBe("#28201b");
+    expect(sfDark.background.default).toBe("#282828");
   });
 
   it("prefers Caskaydia Cove for content and Montserrat for labels", () => {
@@ -81,22 +81,32 @@ describe("the four-colour-scheme theme", () => {
   it("applies the verified Sunfade dark roles", () => {
     const p = varsTheme.colorSchemes["sunfade-dark"]!.palette;
     expect(p.mode).toBe("dark");
-    expect(p.background.default).toBe("#28201b");
-    expect(p.background.paper).toBe("#3b2d25");
-    expect(p.text.primary).toBe("#ead3b0");
-    expect(p.divider).toBe("#4e392e");
-    expect(p.primary.main).toBe("#879a9a");
-    expect(p.primary.contrastText).toBe("#1d1916");
-    expect(p.code.bg).toBe("#1d1916");
-    expect(p.code.keyword).toBe("#b28aa0");
+    expect(p.background.default).toBe("#282828");
+    expect(p.background.paper).toBe("#3c3836");
+    expect(p.text.primary).toBe("#ebdbb2");
+    expect(p.divider).toBe("#45403d");
+    expect(p.primary.main).toBe("#83a598");
+    expect(p.primary.contrastText).toBe("#1d2021");
+    expect(p.code.bg).toBe("#1d2021");
+    expect(p.code.keyword).toBe("#d3869b");
+  });
+
+  it("keeps Sunfade dark distinct from Current dark", () => {
+    const current = varsTheme.colorSchemes.dark!.palette;
+    const sunfade = varsTheme.colorSchemes["sunfade-dark"]!.palette;
+    /* Neutral grey vs warm charcoal: the two dark pages must not collide. */
+    expect(sunfade.background.default).not.toBe(current.background.default);
+    expect(sunfade.background.paper).not.toBe(current.background.paper);
+    /* Muted blue-grey accent vs Current dark's bright sky blue. */
+    expect(sunfade.primary.main).not.toBe(current.primary.main);
   });
 
   it("keeps the derived accent channels in sync with the Sunfade mains", () => {
     const light = varsTheme.colorSchemes["sunfade-light"]!.palette;
     const dark = varsTheme.colorSchemes["sunfade-dark"]!.palette;
-    /* #4e5d61 -> 78 93 97; #879a9a -> 135 154 154 */
+    /* #4e5d61 -> 78 93 97; #83a598 -> 131 165 152 */
     expect(light.primary.mainChannel).toBe("78 93 97");
-    expect(dark.primary.mainChannel).toBe("135 154 154");
+    expect(dark.primary.mainChannel).toBe("131 165 152");
   });
 
   it("generates one stylesheet per scheme, dark attached to :root", () => {
@@ -126,9 +136,9 @@ describe("the four-colour-scheme theme", () => {
 
     const sfDark = findRule(".sunfade-dark");
     expect(sfDark).toBeDefined();
-    expect(sfDark?.["--mui-palette-background-default"]).toBe("#28201b");
-    expect(sfDark?.["--mui-palette-primary-main"]).toBe("#879a9a");
-    expect(sfDark?.["--mui-palette-code-bg"]).toBe("#1d1916");
+    expect(sfDark?.["--mui-palette-background-default"]).toBe("#282828");
+    expect(sfDark?.["--mui-palette-primary-main"]).toBe("#83a598");
+    expect(sfDark?.["--mui-palette-code-bg"]).toBe("#1d2021");
 
     const sfLight = findRule(".sunfade-light");
     expect(sfLight).toBeDefined();
