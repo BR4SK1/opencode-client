@@ -8,7 +8,8 @@ Built with Next.js App Router, React, TypeScript, Material UI, NextAuth v5 with 
 
 - Node.js 20.9 or newer
 - pnpm 10.18.1 (the version pinned in `package.json`)
-- An OpenCode server reachable from the application server
+- An OpenCode server reachable from the application server, with the
+  `fleet-web-prompt-context` skill installed before deploying this client version
 - An OIDC provider for sign-in
 
 ## Local development

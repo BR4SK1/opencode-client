@@ -24,7 +24,6 @@ import {
   reconcileMessageSnapshot,
   sortMessageSnapshot,
 } from "@/lib/inbox-message-view";
-import { appendWebPromptContext } from "@/lib/prompt-context";
 import {
   createAgentDefaultCoordinator,
   DEFAULT_AGENT_ID,
@@ -1075,7 +1074,7 @@ export default function ChatApp() {
             kind: "user",
             id: clientMessageID,
             clientMessageID,
-            text: appendWebPromptContext(text),
+            text,
             time: Date.now(),
             images: images.map((image) => ({
               src: `data:${image.mime};base64,${image.data}`,
