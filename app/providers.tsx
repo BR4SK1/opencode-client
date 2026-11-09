@@ -27,7 +27,7 @@ const globalStyles = (
       },
       "html.sunfade-dark": {
         scrollbarWidth: "thin",
-        scrollbarColor: "rgba(234,211,176,0.35) transparent",
+        scrollbarColor: "rgba(235,219,178,0.35) transparent",
       },
       "::selection": { backgroundColor: "rgba(25,118,210,0.22)" },
       "html.dark ::selection": { backgroundColor: "rgba(144,202,249,0.30)" },
@@ -36,8 +36,8 @@ const globalStyles = (
         color: "#fff8e9",
       },
       "html.sunfade-dark ::selection": {
-        backgroundColor: "#879a9a",
-        color: "#1d1916",
+        backgroundColor: "#83a598",
+        color: "#1d2021",
       },
       "@keyframes oc-caret-blink": {
         "50%": { opacity: 0.15 },

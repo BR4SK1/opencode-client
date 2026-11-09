@@ -12,6 +12,7 @@ import {
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import type { FormInfo, ModelRef } from "@opencode/client";
 import type { PromptMentionAttachment } from "@/lib/prompt-mentions";
+import { appendWebPromptContext } from "@/lib/prompt-context";
 import {
   createAgentDefaultCoordinator,
   DEFAULT_AGENT_ID,
@@ -1020,7 +1021,7 @@ export default function ChatApp() {
             kind: "user",
             id: clientMessageID,
             clientMessageID,
-            text,
+            text: appendWebPromptContext(text),
             time: Date.now(),
           },
         ]),

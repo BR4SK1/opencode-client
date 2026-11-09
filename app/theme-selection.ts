@@ -40,7 +40,7 @@ export const THEME_COLOR_BY_SCHEME: Record<SchemeName, string> = {
   light: "#ffffff",
   "sunfade-light": "#f8e9d2",
   dark: "#1C1917",
-  "sunfade-dark": "#28201b",
+  "sunfade-dark": "#282828",
 };
 
 interface SchemeState {
