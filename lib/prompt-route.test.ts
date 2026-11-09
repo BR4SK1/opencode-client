@@ -17,6 +17,7 @@ vi.mock("@/lib/session-mentions", () => ({
 }));
 
 import { POST } from "../app/api/sessions/[id]/prompt/route";
+import { WEB_PROMPT_CONTEXT_SUFFIX } from "./prompt-context";
 
 const params = Promise.resolve({ id: "session-1" });
 
@@ -61,10 +62,68 @@ describe("prompt route mention payload", () => {
     );
     expect(mocks.prompt).toHaveBeenCalledWith({
       sessionID: "session-1",
-      text: "Read @src/main",
+      text: `Read @src/main${WEB_PROMPT_CONTEXT_SUFFIX}`,
       files: [{ uri: "file:///project/src/main.ts", name: "main.ts", mention: { start: 5, end: 14, text: "@src/main" } }],
       metadata: { opencodeClientMessageID: "client-1" },
     });
+  });
+
+  it("appends context without changing Unicode mention offsets or adding optional metadata", async () => {
+    const text = "A😀 @src/main";
+    const attachment = {
+      descriptor: { kind: "file", path: "src/main" },
+      mention: { start: 4, end: 13, text: "@src/main" },
+    };
+    const resolvedFile = {
+      uri: "file:///project/src/main.ts",
+      name: "main.ts",
+      mention: attachment.mention,
+    };
+    mocks.resolvePromptFiles.mockResolvedValue([resolvedFile]);
+
+    const response = await POST(
+      new Request("http://localhost/api/sessions/session-1/prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, attachments: [attachment] }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.resolvePromptFiles).toHaveBeenCalledWith(
+      expect.anything(),
+      { directory: "/project" },
+      [attachment],
+    );
+    expect(mocks.prompt).toHaveBeenCalledWith({
+      sessionID: "session-1",
+      text: `${text}${WEB_PROMPT_CONTEXT_SUFFIX}`,
+      files: [resolvedFile],
+    });
+    expect(mocks.prompt.mock.calls[0]?.[0]).not.toHaveProperty("metadata");
+  });
+
+  it("rejects invalid prompt text and client message IDs before sending", async () => {
+    for (const body of [
+      { text: "  " },
+      { text: "Valid prompt", clientMessageID: "" },
+      { text: "Valid prompt", clientMessageID: "x".repeat(129) },
+    ]) {
+      const response = await POST(
+        new Request("http://localhost/api/sessions/session-1/prompt", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        { params },
+      );
+
+      expect(response.status).toBe(400);
+    }
+
+    expect(mocks.getSessionLocation).not.toHaveBeenCalled();
+    expect(mocks.prompt).not.toHaveBeenCalled();
   });
 
   it("rejects forged hidden or traversal paths before sending", async () => {

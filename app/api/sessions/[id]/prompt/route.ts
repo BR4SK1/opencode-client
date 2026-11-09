@@ -2,6 +2,7 @@ import { requireAuth } from "@/lib/api-auth";
 import { opencode } from "@/lib/opencode";
 import { getSessionLocation, resolvePromptFiles } from "@/lib/session-mentions";
 import { validatePromptMentions } from "@/lib/prompt-mentions";
+import { appendWebPromptContext } from "@/lib/prompt-context";
 
 export const dynamic = "force-dynamic";
 
@@ -41,7 +42,7 @@ export async function POST(
     }
     await opencode.session.prompt({
       sessionID: id,
-      text: parsed.text,
+      text: appendWebPromptContext(parsed.text),
       ...(files.length > 0 ? { files } : {}),
       ...(body.clientMessageID
         ? {
