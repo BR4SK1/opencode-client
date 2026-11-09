@@ -2,7 +2,7 @@ import { requireAuth } from "@/lib/api-auth";
 import { opencode } from "@/lib/opencode";
 import { getSessionLocation, resolvePromptFiles } from "@/lib/session-mentions";
 import { validatePromptMentions } from "@/lib/prompt-mentions";
-import { appendWebPromptContext } from "@/lib/prompt-context";
+import { WEB_PROMPT_SKILL_ID } from "@/lib/web-prompt-skill";
 import { readBoundedRequestText, RequestBodyTooLargeError } from "@/lib/bounded-request";
 import {
   MAX_PROMPT_REQUEST_BYTES,
@@ -73,7 +73,8 @@ export async function POST(
       sessionID: id,
       // OpenCode's durable inbox reconciles retries by this stable message ID.
       ...(body.clientMessageID ? { id: body.clientMessageID as string } : {}),
-      text: appendWebPromptContext(parsed.text),
+      text: parsed.text,
+      skills: [{ id: WEB_PROMPT_SKILL_ID }],
       ...(files.length > 0 ? { files } : {}),
       ...(body.clientMessageID
         ? {

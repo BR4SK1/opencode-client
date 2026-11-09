@@ -17,7 +17,7 @@ vi.mock("@/lib/session-mentions", () => ({
 }));
 
 import { POST } from "../app/api/sessions/[id]/prompt/route";
-import { WEB_PROMPT_CONTEXT_SUFFIX } from "./prompt-context";
+import { WEB_PROMPT_SKILL_ID } from "./web-prompt-skill";
 import { MAX_PROMPT_REQUEST_BYTES } from "./prompt-images";
 
 const params = Promise.resolve({ id: "session-1" });
@@ -64,13 +64,14 @@ describe("prompt route mention payload", () => {
     expect(mocks.prompt).toHaveBeenCalledWith({
       sessionID: "session-1",
       id: "msg_12345678-1234-1234-1234-123456789abc",
-      text: `Read @src/main${WEB_PROMPT_CONTEXT_SUFFIX}`,
+      text: "Read @src/main",
+      skills: [{ id: WEB_PROMPT_SKILL_ID }],
       files: [{ uri: "file:///project/src/main.ts", name: "main.ts", mention: { start: 5, end: 14, text: "@src/main" } }],
       metadata: { opencodeClientMessageID: "msg_12345678-1234-1234-1234-123456789abc" },
     });
   });
 
-  it("appends context without changing Unicode mention offsets or adding optional metadata", async () => {
+  it("attaches the prompt-local skill without changing text, Unicode mention offsets, or optional metadata", async () => {
     const text = "A😀 @src/main";
     const attachment = {
       descriptor: { kind: "file", path: "src/main" },
@@ -100,7 +101,8 @@ describe("prompt route mention payload", () => {
     );
     expect(mocks.prompt).toHaveBeenCalledWith({
       sessionID: "session-1",
-      text: `${text}${WEB_PROMPT_CONTEXT_SUFFIX}`,
+      text,
+      skills: [{ id: WEB_PROMPT_SKILL_ID }],
       files: [resolvedFile],
     });
     expect(mocks.prompt.mock.calls[0]?.[0]).not.toHaveProperty("metadata");
@@ -151,7 +153,8 @@ describe("prompt route mention payload", () => {
     expect(response.status).toBe(200);
     expect(mocks.prompt).toHaveBeenCalledWith({
       sessionID: "session-1",
-      text: `A😀 [image1]${WEB_PROMPT_CONTEXT_SUFFIX}`,
+      text: "A😀 [image1]",
+      skills: [{ id: WEB_PROMPT_SKILL_ID }],
       files: [{
         uri: "data:image/png;base64,iVBORw0KGgo=",
         name: ".._screen.png",
