@@ -6,6 +6,10 @@ import {
   type MentionDescriptor,
   type MentionSpan,
 } from "./prompt-mentions";
+import {
+  prepareComposerImages,
+  type ComposerImage,
+} from "./prompt-images";
 
 export interface ComposerDraftMention {
   id: string;
@@ -18,6 +22,9 @@ export interface ComposerDraftMention {
 export interface ComposerDraftContent {
   text: string;
   mentions: ComposerDraftMention[];
+  images: ComposerImage[];
+  /** Stable OpenCode message ID retained across retries until the draft is edited or accepted. */
+  clientMessageID?: string;
 }
 
 export interface ComposerDraft extends ComposerDraftContent {
@@ -32,7 +39,7 @@ export interface DismissedMentionQuery {
   query: string;
 }
 
-const EMPTY_DRAFT: ComposerDraft = { text: "", mentions: [], revision: 0 };
+const EMPTY_DRAFT: ComposerDraft = { text: "", mentions: [], images: [], revision: 0 };
 
 export function isSameDismissedMention(
   dismissed: DismissedMentionQuery | null,
@@ -92,12 +99,15 @@ export function getComposerDraft(store: SessionComposerDrafts, sessionID: string
 export function prepareComposerDraftSubmission(
   text: string,
   mentions: readonly ComposerDraftMention[],
-): { text: string; mentions: ComposerDraftMention[]; valid: boolean } {
+  images: readonly ComposerImage[] = [],
+): { text: string; mentions: ComposerDraftMention[]; images: ComposerImage[]; valid: boolean } {
   const trimmed = trimPromptMentions(text, mentions);
+  const preparedImages = prepareComposerImages(text, images);
   return {
     text: trimmed.text,
     mentions: trimmed.attachments,
-    valid: trimmed.attachments.length === mentions.length,
+    images: preparedImages.images,
+    valid: trimmed.attachments.length === mentions.length && preparedImages.valid,
   };
 }
 

@@ -8,6 +8,7 @@ import ExpandMore from "@mui/icons-material/ExpandMore";
 import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
+import AddPhotoAlternateOutlined from "@mui/icons-material/AddPhotoAlternateOutlined";
 import SmartToy from "@mui/icons-material/SmartToy";
 import InsertDriveFileOutlined from "@mui/icons-material/InsertDriveFileOutlined";
 import FolderOpenOutlined from "@mui/icons-material/FolderOpenOutlined";
@@ -30,6 +31,15 @@ import {
   type ComposerDraftContent,
   type ComposerDraftMention,
 } from "@/lib/composer-drafts";
+import {
+  collectClipboardImageFiles,
+  imageBytesMatchMime,
+  planComposerImageInsertion,
+  removeComposerImage,
+  sanitizeImageName,
+  type PromptImageAttachment,
+  type SupportedImageMime,
+} from "@/lib/prompt-images";
 import {
   scheduleMentionSearch,
   sameMentionRequest,
@@ -81,6 +91,18 @@ function readableToolStatus(status: string): string {
 function formatTime(time: number): string {
   const ms = time < 1e12 ? time * 1000 : time;
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+async function readImageBase64(file: File, mime: SupportedImageMime): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes.length !== file.size || !imageBytesMatchMime(bytes, mime)) {
+    throw new Error("The selected file is not a valid image of its declared type.");
+  }
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function AssistantHeader({ time, agent }: { time?: number; agent?: string }) {
@@ -338,6 +360,7 @@ interface ChatViewProps {
   sessionID: string;
   draft: ComposerDraft;
   onDraftChange: (sessionID: string, draft: ComposerDraftContent) => void;
+  onImageRead: (sessionID: string, imageID: string, result: { data: string } | { error: string }) => void;
   onClearDraft: (sessionID: string, revision: number) => void;
   title: string;
   messages: MessageVM[];
@@ -357,7 +380,7 @@ interface ChatViewProps {
   modelBusy: boolean;
   onSwitchAgent: (agentID: string) => void;
   onSwitchModel: (model: ModelRef) => void;
-  onSend: (sessionID: string, text: string, attachments: PromptMentionAttachment[]) => Promise<boolean>;
+  onSend: (sessionID: string, text: string, attachments: PromptMentionAttachment[], images: PromptImageAttachment[], clientMessageID: string) => Promise<boolean>;
   onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
   onRefresh: () => void;
@@ -378,6 +401,7 @@ export default function ChatView({
   sessionID,
   draft,
   onDraftChange,
+  onImageRead,
   onClearDraft,
   title,
   messages,
@@ -430,6 +454,8 @@ export default function ChatView({
     setActiveMention(next);
   };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const filePickerSelectionRef = useRef<{ sessionID: string; start: number; end: number } | null>(null);
   const activeOptionRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
@@ -560,8 +586,90 @@ export default function ChatView({
   const handleTextChange = (value: string, caret: number) => {
     const current = currentDraft();
     const adjusted = trackMentionEdits(current.text, value, current.mentions);
-    commitDraft({ text: value, mentions: adjusted });
+    const adjustedImages = trackMentionEdits(current.text, value, current.images);
+    commitDraft({ text: value, mentions: adjusted, images: adjustedImages });
     updateActiveMention(findActiveMentionQuery(value, caret, adjusted));
+  };
+
+  const insertImageFiles = (
+    files: File[],
+    selectionStart: number,
+    selectionEnd: number,
+    pastedText = "",
+  ) => {
+    const current = currentDraft();
+    const incoming = files.map((file) => ({
+      id: crypto.randomUUID(),
+      name: sanitizeImageName(file.name),
+      mime: file.type as SupportedImageMime,
+      size: file.size,
+    }));
+    const plan = planComposerImageInsertion(
+      current.text,
+      current.mentions,
+      current.images,
+      selectionStart,
+      selectionEnd,
+      incoming,
+      pastedText,
+    );
+
+    if (pastedText || plan.accepted) {
+      commitDraft({
+        text: plan.text,
+        mentions: plan.mentions as ComposerDraftMention[],
+        images: plan.images,
+      });
+      updateActiveMention(findActiveMentionQuery(plan.text, plan.caret, plan.mentions));
+      requestAnimationFrame(() => {
+        const input = textareaRef.current;
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(plan.caret, plan.caret);
+      });
+    }
+    // Set after commitDraft: that helper clears old errors, but this validation
+    // belongs to the paste operation and must survive a mixed text/image paste.
+    if (plan.error) setDraftError({ sessionID, message: plan.error });
+
+    if (plan.accepted) {
+      const insertedIDs = new Set(incoming.map((image) => image.id));
+      plan.images.filter((image) => insertedIDs.has(image.id)).forEach((image) => {
+        const file = files[incoming.findIndex((item) => item.id === image.id)]!;
+        void readImageBase64(file, image.mime)
+          .then((data) => onImageRead(sessionID, image.id, { data }))
+          .catch((error: unknown) => onImageRead(sessionID, image.id, {
+            error: error instanceof Error ? error.message : "Could not read this image.",
+          }));
+      });
+    }
+  };
+
+  const handleImagePaste = (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = Array.from(event.clipboardData.items);
+    if (!items.some((item) => item.kind === "file" && item.type.startsWith("image/"))) return;
+    event.preventDefault();
+    const { files, failedCount } = collectClipboardImageFiles(items);
+    const text = event.clipboardData.getData("text/plain");
+    insertImageFiles(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd, text);
+    if (failedCount > 0) {
+      setDraftError({
+        sessionID,
+        message: "Could not read an image from the clipboard. Copy it again or choose the image file.",
+      });
+    }
+  };
+
+  const handleImagePicker = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    if (files.length === 0) return;
+    const previous = filePickerSelectionRef.current;
+    filePickerSelectionRef.current = null;
+    const input = textareaRef.current;
+    const start = previous?.sessionID === sessionID ? previous.start : (input?.selectionStart ?? text.length);
+    const end = previous?.sessionID === sessionID ? previous.end : (input?.selectionEnd ?? text.length);
+    insertImageFiles(files, start, end);
   };
 
   const selectCandidate = (candidate: MentionCandidate) => {
@@ -574,6 +682,7 @@ export default function ChatView({
     const mentionText = `@${candidate.label}`;
     const nextText = `${current.text.slice(0, activeMention.start)}${mentionText}${current.text.slice(activeMention.end)}`;
     const adjusted = trackMentionEdits(current.text, nextText, current.mentions);
+    const adjustedImages = trackMentionEdits(current.text, nextText, current.images);
     const descriptor: MentionDescriptor = candidate.kind === "reference"
       ? { kind: "reference", alias: candidate.alias ?? candidate.name }
       : { kind: candidate.kind, path: candidate.path ?? candidate.label };
@@ -586,7 +695,7 @@ export default function ChatView({
       mention: { start, end: start + mentionText.length, text: mentionText },
     };
     const nextMentions = [...adjusted, nextMention].sort((a, b) => a.mention.start - b.mention.start);
-    commitDraft({ text: nextText, mentions: nextMentions });
+    commitDraft({ text: nextText, mentions: nextMentions, images: adjustedImages });
     updateActiveMention(null);
     requestAnimationFrame(() => {
       const textarea = textareaRef.current;
@@ -606,7 +715,31 @@ export default function ChatView({
       textareaRef.current?.selectionStart ?? current.text.length,
     );
     if (!removed) return;
-    commitDraft({ text: removed.text, mentions: removed.mentions });
+    commitDraft({
+      text: removed.text,
+      mentions: removed.mentions,
+      images: trackMentionEdits(current.text, removed.text, current.images),
+    });
+    updateActiveMention(findActiveMentionQuery(removed.text, removed.caret, removed.mentions));
+    requestAnimationFrame(() => {
+      const input = textareaRef.current;
+      if (!input) return;
+      input.focus();
+      input.setSelectionRange(removed.caret, removed.caret);
+    });
+  };
+
+  const removeImage = (id: string) => {
+    const current = currentDraft();
+    const removed = removeComposerImage(
+      current.text,
+      current.mentions,
+      current.images,
+      id,
+      textareaRef.current?.selectionStart ?? current.text.length,
+    );
+    if (!removed) return;
+    commitDraft({ text: removed.text, mentions: removed.mentions as ComposerDraftMention[], images: removed.images });
     updateActiveMention(findActiveMentionQuery(removed.text, removed.caret, removed.mentions));
     requestAnimationFrame(() => {
       const input = textareaRef.current;
@@ -618,12 +751,14 @@ export default function ChatView({
 
   const handleSend = async () => {
     const current = currentDraft();
-    const prepared = prepareComposerDraftSubmission(current.text, current.mentions);
-    if (!prepared.text || sending) return;
+    const prepared = prepareComposerDraftSubmission(current.text, current.mentions, current.images);
+    if ((!prepared.text && prepared.images.length === 0) || sending) return;
     if (!prepared.valid) {
       setDraftError({
         sessionID,
-        message: "A selected attachment no longer matches the draft text. Remove it and select it again before sending.",
+        message: prepared.images.some((image) => !image.data || image.error)
+          ? "An image is still being read or could not be read. Remove the failed image or choose it again before sending."
+          : "A selected attachment no longer matches the draft text. Remove it and select it again before sending.",
       });
       return;
     }
@@ -632,8 +767,23 @@ export default function ChatView({
     // prior scroll position.
     nearBottomRef.current = true;
     const payload = prepared.mentions.map(({ descriptor, mention }) => ({ descriptor, mention }));
-    const ok = await onSend(sessionID, prepared.text, payload);
-    if (ok) onClearDraft(sessionID, current.revision);
+    const imagePayload: PromptImageAttachment[] = prepared.images.map((image) => ({
+      name: image.name,
+      mime: image.mime,
+      data: image.data!,
+      mention: image.mention,
+    }));
+    const clientMessageID = current.clientMessageID ?? `msg_${crypto.randomUUID()}`;
+    const submitted = current.clientMessageID
+      ? current
+      : commitDraft({
+          text: current.text,
+          mentions: current.mentions,
+          images: current.images,
+          clientMessageID,
+        });
+    const ok = await onSend(sessionID, prepared.text, payload, imagePayload, clientMessageID);
+    if (ok) onClearDraft(sessionID, submitted.revision);
   };
 
   const handleLoadOlder = async () => {
@@ -649,6 +799,7 @@ export default function ChatView({
   };
 
   const rows = groupToolOnlyMessages(messages);
+  const imageUnavailable = draft.images.some((image) => !image.data || Boolean(image.error));
   const modelValue = (value: ModelRef) =>
     JSON.stringify([value.providerID, value.id, value.variant ?? ""]);
   const selectedModel = model ? modelValue(model) : "";
@@ -1013,9 +1164,35 @@ export default function ChatView({
                     borderRadius: 0,
                   }}
                 >
-                  <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-                    {row.message.text}
-                  </Typography>
+                  {row.message.text.trim() && (
+                    <Typography variant="body1" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                      {row.message.text}
+                    </Typography>
+                  )}
+                  {row.message.images.length > 0 && (
+                    <Stack direction="row" sx={{ flexWrap: "wrap", gap: 0.75, mt: row.message.text.trim() ? 0.75 : 0 }}>
+                      {row.message.images.map((image, index) => (
+                        <Box
+                          key={`${image.name}:${index}`}
+                          component="img"
+                          src={image.src}
+                          alt={image.name}
+                          loading="lazy"
+                          sx={{ display: "block", maxWidth: "min(100%, 360px)", maxHeight: 280, objectFit: "contain", bgcolor: "background.paper" }}
+                        />
+                      ))}
+                    </Stack>
+                  )}
+                  {row.message.imageWarning && (
+                    <Typography variant="caption" sx={{ display: "block", mt: 0.5, opacity: 0.85 }}>
+                      {row.message.imageWarning}
+                    </Typography>
+                  )}
+                  {row.message.queued && (
+                    <Typography variant="caption" sx={{ display: "block", mt: 0.5, opacity: 0.8 }}>
+                      Pending delivery
+                    </Typography>
+                  )}
                 </Paper>
                 {row.message.time !== undefined && (
                   <Typography variant="caption" sx={{ color: "text.secondary", fontSize: 11 }}>
@@ -1157,8 +1334,8 @@ export default function ChatView({
           </Paper>
         )}
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          {mentions.length > 0 && (
-            <Stack direction="row" role="group" aria-label="Selected attachments" sx={{ flexWrap: "wrap", gap: 0.5, mb: 0.75 }}>
+          {(mentions.length > 0 || draft.images.length > 0) && (
+            <Stack direction="row" role="group" aria-label="Selected attachments" sx={{ flexWrap: "wrap", alignItems: "center", gap: 0.75, mb: 0.75 }}>
               {mentions.map((mention) => (
                 <Chip
                   key={mention.id}
@@ -1171,6 +1348,38 @@ export default function ChatView({
                   sx={{ maxWidth: "100%", minHeight: 32, "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" } }}
                 />
               ))}
+              {draft.images.map((image) => (
+                <Paper key={image.id} variant="outlined" sx={{ position: "relative", width: 88, p: 0.5 }}>
+                  {image.data ? (
+                    <Box
+                      component="img"
+                      src={`data:${image.mime};base64,${image.data}`}
+                      alt={image.name}
+                      sx={{ display: "block", width: 78, height: 58, objectFit: "cover", bgcolor: "action.hover" }}
+                    />
+                  ) : (
+                    <Box sx={{ width: 78, height: 58, display: "grid", placeItems: "center", bgcolor: "action.hover" }}>
+                      {image.error ? <Typography variant="caption" color="error.main">Failed</Typography> : <CircularProgress size={18} />}
+                    </Box>
+                  )}
+                  <IconButton
+                    aria-label={`Remove ${image.mention.text}`}
+                    size="small"
+                    onClick={() => removeImage(image.id)}
+                    sx={{ position: "absolute", top: 1, right: 1, bgcolor: "background.paper", minWidth: 32, minHeight: 32 }}
+                  >
+                    <Close fontSize="small" />
+                  </IconButton>
+                  <Typography variant="caption" noWrap title={image.error || image.name} sx={{ display: "block", pt: 0.25, lineHeight: 1.2 }}>
+                    {image.mention.text} · {image.name}
+                  </Typography>
+                  {image.error && (
+                    <Typography role="alert" variant="caption" color="error.main" sx={{ display: "block", lineHeight: 1.2 }}>
+                      Could not read image. Remove it or choose it again.
+                    </Typography>
+                  )}
+                </Paper>
+              ))}
             </Stack>
           )}
           {draftError?.sessionID === sessionID && (
@@ -1178,6 +1387,14 @@ export default function ChatView({
               {draftError.message}
             </Typography>
           )}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+            onChange={handleImagePicker}
+          />
           <TextField
             inputRef={textareaRef}
             multiline
@@ -1198,6 +1415,7 @@ export default function ChatView({
                 "aria-controls": activeMention && candidates.length > 0 ? "mention-options" : undefined,
                 "aria-activedescendant": activeMention && candidates.length > 0 ? `mention-option-${activeCandidate}` : undefined,
                 onKeyDown: handleKeyDown,
+                onPaste: handleImagePaste,
                 onKeyUp: (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
                   if (!e.nativeEvent.isComposing) updateMentionAtCaret(e.currentTarget.selectionStart);
                 },
@@ -1211,9 +1429,27 @@ export default function ChatView({
           />
         </Box>
         <IconButton
+          aria-label="Attach images"
+          title="Attach up to 4 PNG, JPEG, or WebP images (4 MiB each, 6 MiB total)"
+          size="large"
+          disabled={sending}
+          onClick={() => {
+            const input = textareaRef.current;
+            filePickerSelectionRef.current = {
+              sessionID,
+              start: input?.selectionStart ?? text.length,
+              end: input?.selectionEnd ?? text.length,
+            };
+            imageInputRef.current?.click();
+          }}
+          sx={{ minWidth: 48, minHeight: 48 }}
+        >
+          <AddPhotoAlternateOutlined />
+        </IconButton>
+        <IconButton
           aria-label="Send"
           size="large"
-          disabled={!text.trim() || sending}
+          disabled={(!text.trim() && draft.images.length === 0) || sending || imageUnavailable}
           onClick={() => void handleSend()}
           sx={{
             minWidth: 48,

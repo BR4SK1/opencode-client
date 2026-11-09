@@ -12,6 +12,18 @@ import {
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import type { FormInfo, ModelRef } from "@opencode/client";
 import type { PromptMentionAttachment } from "@/lib/prompt-mentions";
+import {
+  decodeCanonicalBase64,
+  mapHistoryImageFiles,
+  MAX_TOTAL_IMAGE_BYTES,
+  type PromptImageAttachment,
+} from "@/lib/prompt-images";
+import {
+  buildInboxUserMessages,
+  mergeMessageSnapshots,
+  reconcileMessageSnapshot,
+  sortMessageSnapshot,
+} from "@/lib/inbox-message-view";
 import { appendWebPromptContext } from "@/lib/prompt-context";
 import {
   createAgentDefaultCoordinator,
@@ -78,6 +90,11 @@ interface ModelOptionVM {
   label: string;
 }
 
+export interface ImageVM {
+  src: string;
+  name: string;
+}
+
 export type PartVM =
   | { kind: "text"; text: string }
   | {
@@ -97,6 +114,9 @@ export type MessageVM =
       text: string;
       time?: number;
       clientMessageID?: string;
+      images: ImageVM[];
+      queued?: boolean;
+      imageWarning?: string;
     }
   | {
       kind: "assistant";
@@ -156,6 +176,7 @@ interface RawMessage {
   text?: unknown;
   metadata?: unknown;
   content?: RawPart[];
+  files?: unknown;
   agent?: unknown;
   previous?: unknown;
   time?: { created?: unknown };
@@ -202,35 +223,14 @@ function modelRef(v: unknown): ModelRef | undefined {
   return { id, providerID, ...(variant ? { variant } : {}) };
 }
 
-function sortVMs(messages: MessageVM[]): MessageVM[] {
-  return messages
-    .map((message, index) => ({ message, index }))
-    .sort(
-      (a, b) =>
-        (a.message.time ?? 0) - (b.message.time ?? 0) || a.index - b.index,
-    )
-    .map(({ message }) => message);
-}
-
-function mergeVMs(existing: MessageVM[], incoming: MessageVM[]): MessageVM[] {
-  const byID = new Map(existing.map((message) => [message.id, message]));
-
-  for (const message of incoming) {
-    if (message.kind === "user" && message.clientMessageID) {
-      for (const [id, current] of byID) {
-        if (
-          current.kind === "user" &&
-          current.clientMessageID === message.clientMessageID &&
-          id !== message.id
-        ) {
-          byID.delete(id);
-        }
-      }
-    }
-    byID.set(message.id, message);
-  }
-
-  return sortVMs(Array.from(byID.values()));
+function imageVMs(value: unknown, messageID: string): { images: ImageVM[]; imageWarning?: string } {
+  const mapped = mapHistoryImageFiles(value, messageID || undefined);
+  return {
+    images: mapped.images.map(({ src, name }) => ({ src, name })),
+    ...(mapped.omittedCount > 0
+      ? { imageWarning: `${mapped.omittedCount} image${mapped.omittedCount === 1 ? " was" : "s were"} not previewed (invalid data or preview size limit).` }
+      : {}),
+  };
 }
 
 function buildVMs(data: unknown): MessageVM[] {
@@ -258,6 +258,7 @@ function buildVMs(data: unknown): MessageVM[] {
         text: m.text,
         time,
         clientMessageID: str(metadata.opencodeClientMessageID) || undefined,
+        ...imageVMs(m.files, str(m.id)),
       });
     } else if (m.type === "agent-switched") {
       out.push({
@@ -302,7 +303,7 @@ function buildVMs(data: unknown): MessageVM[] {
     }
     // all other message types (idle/system/compaction/model-selected/...) are skipped
   });
-  return sortVMs(out);
+  return sortMessageSnapshot(out);
 }
 
 function withStreamingMessages(
@@ -334,7 +335,7 @@ function withStreamingMessages(
     }
   }
 
-  return sortVMs(Array.from(byID.values()));
+  return sortMessageSnapshot(Array.from(byID.values()));
 }
 
 export default function ChatApp() {
@@ -693,8 +694,34 @@ export default function ChatApp() {
       if (!res.ok) throw new Error(`message fetch failed: ${res.status}`);
       const json = asRecord(await res.json());
       const rawMessages = Array.isArray(json.messages) ? json.messages : [];
+      let inboxMessages: MessageVM[] = [];
+      let inboxSnapshotSucceeded = false;
+      if (!cursor) {
+        let inboxFailed = false;
+        try {
+          const inboxResponse = await apiFetch(`/api/sessions/${encodeURIComponent(id)}/inbox`);
+          if (inboxResponse.ok) {
+            const inbox = asRecord(await inboxResponse.json());
+            inboxMessages = buildInboxUserMessages(inbox.items);
+            inboxSnapshotSucceeded = true;
+          } else {
+            inboxFailed = true;
+          }
+        } catch {
+          inboxFailed = true;
+        }
+        if (activeIdRef.current === id) {
+          setError((previous) => inboxFailed
+            ? "Could not check queued messages; accepted prompts may still be pending. Refresh to retry."
+            : previous === "Could not check queued messages; accepted prompts may still be pending. Refresh to retry."
+              ? null
+              : previous,
+          );
+        }
+      }
       return {
-        messages: buildVMs(rawMessages),
+        messages: mergeMessageSnapshots(inboxMessages, buildVMs(rawMessages)),
+        inboxSnapshotSucceeded,
         rawCount: rawMessages.length,
         nextCursor: str(json.nextCursor) || null,
       };
@@ -716,7 +743,7 @@ export default function ChatApp() {
       ) {
         return false;
       }
-      setHistory((previous) => mergeVMs(previous, page.messages));
+      setHistory((previous) => reconcileMessageSnapshot(previous, page.messages, page.inboxSnapshotSucceeded));
       if (
         olderCursorRef.current === null &&
         !olderPageLoadedRef.current &&
@@ -772,7 +799,7 @@ export default function ChatApp() {
       ) {
         return false;
       }
-      setHistory((previous) => mergeVMs(previous, page.messages));
+      setHistory((previous) => mergeMessageSnapshots(previous, page.messages));
       olderPageLoadedRef.current = true;
       setMessageCursor(page.nextCursor);
       return page.rawCount > 0;
@@ -948,7 +975,7 @@ export default function ChatApp() {
         ) {
           return;
         }
-        setHistory((previous) => mergeVMs(previous, page.messages));
+        setHistory((previous) => mergeMessageSnapshots(previous, page.messages));
         setMessageCursor(page.nextCursor);
       } catch {
         /* unauthorized already routed to /signin */
@@ -1003,26 +1030,57 @@ export default function ChatApp() {
     setComposerDrafts((current) => updateComposerDraft(current, sessionID, draft));
   }, []);
 
+  const finishComposerImageRead = useCallback((sessionID: string, imageID: string, result: { data: string } | { error: string }) => {
+    setComposerDrafts((current) => {
+      const draft = getComposerDraft(current, sessionID);
+      if (!draft.images.some((image) => image.id === imageID)) return current;
+      const images = draft.images.map((image) => image.id !== imageID
+        ? image
+        : "data" in result
+          ? { ...image, data: result.data, error: undefined }
+          : { ...image, data: null, error: result.error },
+      );
+      return updateComposerDraft(current, sessionID, {
+        text: draft.text,
+        mentions: draft.mentions,
+        images,
+      });
+    });
+  }, []);
+
   const clearComposerDraft = useCallback((sessionID: string, revision: number) => {
     setComposerDrafts((current) => clearComposerDraftIfRevision(current, sessionID, revision));
   }, []);
 
   const sendPrompt = useCallback(
-    async (sessionID: string, text: string, attachments: PromptMentionAttachment[] = []): Promise<boolean> => {
+    async (
+      sessionID: string,
+      text: string,
+      attachments: PromptMentionAttachment[],
+      images: PromptImageAttachment[],
+      clientMessageID: string,
+    ): Promise<boolean> => {
       const id = sessionID;
-      if (!id || !text.trim() || sendingSessionIDsRef.current.has(id)) return false;
+      const imageBytes = images.reduce((sum, image) => {
+        const bytes = decodeCanonicalBase64(image.data);
+        return sum + (bytes?.length ?? MAX_TOTAL_IMAGE_BYTES + 1);
+      }, 0);
+      if (!id || !text.trim() || imageBytes > MAX_TOTAL_IMAGE_BYTES || sendingSessionIDsRef.current.has(id)) return false;
       sendingSessionIDsRef.current.add(id);
       const generation = sessionGenerationRef.current;
-      const clientMessageID = `tmp-${crypto.randomUUID()}`;
       setHistory((previous) =>
-        sortVMs([
-          ...previous,
+        sortMessageSnapshot([
+          ...previous.filter((message) => message.id !== clientMessageID),
           {
             kind: "user",
             id: clientMessageID,
             clientMessageID,
             text: appendWebPromptContext(text),
             time: Date.now(),
+            images: images.map((image) => ({
+              src: `data:${image.mime};base64,${image.data}`,
+              name: image.name,
+            })),
           },
         ]),
       );
@@ -1038,9 +1096,16 @@ export default function ChatApp() {
         const res = await apiFetch(`/api/sessions/${id}/prompt`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, clientMessageID, attachments }),
+          body: JSON.stringify({ text, clientMessageID, attachments, images }),
         });
-        if (!res.ok) throw new Error(`prompt failed: ${res.status}`);
+        const responseBody = asRecord(await res.json().catch(() => ({})));
+        if (!res.ok) throw new Error(str(responseBody.error) || `Prompt failed (${res.status}).`);
+        setHistory((previous) => previous.map((message) =>
+          message.id === clientMessageID && message.kind === "user"
+            ? { ...message, queued: true }
+            : message,
+        ));
+        void refetchMessages();
         return true;
       } catch (err) {
         if (
@@ -1050,13 +1115,15 @@ export default function ChatApp() {
           setHistory((previous) =>
             previous.filter((message) => message.id !== clientMessageID),
           );
+          // A timeout can follow successful server admission; reconcile before treating the message as absent.
+          void refetchMessages();
         }
         if (
           (err as Error).message !== "unauthorized" &&
           activeIdRef.current === id &&
           sessionGenerationRef.current === generation
         ) {
-          setError("Failed to send message.");
+          setError((err as Error).message || "Failed to send message.");
         }
         return false;
       } finally {
@@ -1068,7 +1135,7 @@ export default function ChatApp() {
         });
       }
     },
-    [apiFetch],
+    [apiFetch, refetchMessages],
   );
 
   // Create the global event stream once on mount.
@@ -1148,6 +1215,24 @@ export default function ChatApp() {
           );
           setPermissionsBySession((previous) => removePermission(previous, rid));
           if (activeHadIt) void resyncPendingPermission();
+          break;
+        }
+        case "session.inbox.enqueued":
+        case "session.inbox.delivered":
+        case "session.inbox.cancelled":
+        case "session.inbox.delivery.changed": {
+          const sid = str(d.sessionID);
+          const inboxID = str(d.inboxID);
+          if (sid === activeIdRef.current) {
+            if (type === "session.inbox.cancelled" && inboxID) {
+              setHistory((previous) => previous.filter((message) =>
+                message.kind !== "user" ||
+                (message.id !== `inbox-${inboxID}` && message.id !== inboxID && message.clientMessageID !== inboxID),
+              ));
+            }
+            // Reconcile both the pending queue and the visible history at the durable boundary.
+            void refetchMessages();
+          }
           break;
         }
         case "session.agent.selected": {
@@ -1614,6 +1699,7 @@ export default function ChatApp() {
             sessionID={activeId}
             draft={activeComposerDraft!}
             onDraftChange={persistComposerDraft}
+            onImageRead={finishComposerImageRead}
             onClearDraft={clearComposerDraft}
             title={activeSession?.title || "Untitled"}
             messages={displayMessages}

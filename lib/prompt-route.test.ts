@@ -18,6 +18,7 @@ vi.mock("@/lib/session-mentions", () => ({
 
 import { POST } from "../app/api/sessions/[id]/prompt/route";
 import { WEB_PROMPT_CONTEXT_SUFFIX } from "./prompt-context";
+import { MAX_PROMPT_REQUEST_BYTES } from "./prompt-images";
 
 const params = Promise.resolve({ id: "session-1" });
 
@@ -47,7 +48,7 @@ describe("prompt route mention payload", () => {
             descriptor: { kind: "file", path: "src/main" },
             mention: { start: 5, end: 14, text: "@src/main" },
           }],
-          clientMessageID: "client-1",
+          clientMessageID: "msg_12345678-1234-1234-1234-123456789abc",
         }),
       }),
       { params },
@@ -62,9 +63,10 @@ describe("prompt route mention payload", () => {
     );
     expect(mocks.prompt).toHaveBeenCalledWith({
       sessionID: "session-1",
+      id: "msg_12345678-1234-1234-1234-123456789abc",
       text: `Read @src/main${WEB_PROMPT_CONTEXT_SUFFIX}`,
       files: [{ uri: "file:///project/src/main.ts", name: "main.ts", mention: { start: 5, end: 14, text: "@src/main" } }],
-      metadata: { opencodeClientMessageID: "client-1" },
+      metadata: { opencodeClientMessageID: "msg_12345678-1234-1234-1234-123456789abc" },
     });
   });
 
@@ -123,6 +125,73 @@ describe("prompt route mention payload", () => {
     }
 
     expect(mocks.getSessionLocation).not.toHaveBeenCalled();
+    expect(mocks.prompt).not.toHaveBeenCalled();
+  });
+
+  it("forwards validated image data as an inline OpenCode file in prompt order", async () => {
+    mocks.resolvePromptFiles.mockResolvedValue([]);
+    const response = await POST(
+      new Request("http://localhost/api/sessions/session-1/prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          text: "A😀 [image1]",
+          clientMessageID: "msg_abcdef12-3456-7890-abcd-ef1234567890",
+          images: [{
+            data: "iVBORw0KGgo=",
+            mime: "image/png",
+            name: "../screen.png",
+            mention: { start: 4, end: 12, text: "[image1]" },
+          }],
+        }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.prompt).toHaveBeenCalledWith({
+      sessionID: "session-1",
+      text: `A😀 [image1]${WEB_PROMPT_CONTEXT_SUFFIX}`,
+      files: [{
+        uri: "data:image/png;base64,iVBORw0KGgo=",
+        name: ".._screen.png",
+        mention: { start: 4, end: 12, text: "[image1]" },
+      }],
+      id: "msg_abcdef12-3456-7890-abcd-ef1234567890",
+      metadata: { opencodeClientMessageID: "msg_abcdef12-3456-7890-abcd-ef1234567890" },
+    });
+  });
+
+  it("rejects arbitrary client image URIs and malformed image bytes before contacting OpenCode", async () => {
+    for (const image of [
+      { uri: "https://example.invalid/image.png", mime: "image/png", mention: { start: 0, end: 8, text: "[image1]" } },
+      { data: "AA==", mime: "image/png", mention: { start: 0, end: 8, text: "[image1]" } },
+    ]) {
+      const response = await POST(
+        new Request("http://localhost/api/sessions/session-1/prompt", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "[image1]", images: [image] }),
+        }),
+        { params },
+      );
+      expect(response.status).toBe(400);
+    }
+    expect(mocks.getSessionLocation).not.toHaveBeenCalled();
+    expect(mocks.prompt).not.toHaveBeenCalled();
+  });
+
+  it("bounds the raw authenticated prompt request body", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/sessions/session-1/prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: `{"text":"${"x".repeat(MAX_PROMPT_REQUEST_BYTES)}"}`,
+      }),
+      { params },
+    );
+    expect(response.status).toBe(413);
+    expect((await response.json()).error).toContain("9 MiB encoded limit");
     expect(mocks.prompt).not.toHaveBeenCalled();
   });
 

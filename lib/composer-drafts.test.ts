@@ -11,7 +11,7 @@ import {
   type SessionComposerDrafts,
 } from "./composer-drafts";
 
-const draftContent = (text: string) => ({ text, mentions: [] });
+const draftContent = (text: string) => ({ text, mentions: [], images: [] });
 
 describe("per-session composer drafts", () => {
   it("keeps plain-text and attachment drafts isolated by session", () => {
@@ -19,6 +19,17 @@ describe("per-session composer drafts", () => {
     drafts = updateComposerDraft(drafts, "session-b", draftContent("draft B"));
     expect(getComposerDraft(drafts, "session-a").text).toBe("draft A");
     expect(getComposerDraft(drafts, "session-b").text).toBe("draft B");
+  });
+
+  it("retains an idempotency ID across retries but drops it when draft content is edited", () => {
+    const id = "msg_12345678-1234-1234-1234-123456789abc";
+    let drafts: SessionComposerDrafts = updateComposerDraft(new Map(), "session-a", {
+      ...draftContent("retry me"),
+      clientMessageID: id,
+    });
+    expect(getComposerDraft(drafts, "session-a").clientMessageID).toBe(id);
+    drafts = updateComposerDraft(drafts, "session-a", draftContent("edited prompt"));
+    expect(getComposerDraft(drafts, "session-a").clientMessageID).toBeUndefined();
   });
 
   it("preserves selected attachment descriptors with the session draft", () => {
@@ -32,6 +43,7 @@ describe("per-session composer drafts", () => {
     const drafts = updateComposerDraft(new Map(), "session-a", {
       text: "@src/main.ts",
       mentions: [selected],
+      images: [],
     });
     expect(getComposerDraft(drafts, "session-a").mentions).toEqual([selected]);
   });
