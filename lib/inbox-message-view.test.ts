@@ -5,6 +5,7 @@ import {
   reconcileMessageSnapshot,
   type MessageSnapshotLike,
 } from "./inbox-message-view";
+import { resolveClientMessageText } from "./client-message-text";
 
 const pending = (id: string, text: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -17,6 +18,41 @@ const pending = (id: string, text: string, extra: Record<string, unknown> = {}) 
 const vm = (value: Partial<MessageSnapshotLike> & Pick<MessageSnapshotLike, "id" | "kind">): MessageSnapshotLike => value;
 
 describe("inbox message views and reconciliation", () => {
+  it("shows web-authored text from metadata for queued messages without rendering prompt context", () => {
+    const original = "Check this exact text: 😀\n  keep whitespace  ";
+    const expanded = `${original}\n\n[web prompt context that is not user-authored]`;
+    const result = buildInboxUserMessages([pending("msg_web", expanded, {
+      metadata: {
+        opencodeClientMessageID: "msg_web",
+        opencodeClientOriginalText: original,
+      },
+    })]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]?.text).toBe(original);
+    expect(result[0]?.text).not.toContain("web prompt context");
+  });
+
+  it("keeps inbox text verbatim for external, legacy, and mismatched-message metadata", () => {
+    const external = "external client's actual text\n\nwith all content preserved";
+    const result = buildInboxUserMessages([
+      pending("msg_external", external),
+      pending("msg_legacy", "legacy text with no metadata"),
+      pending("msg_edited", "edited message content", {
+        metadata: {
+          opencodeClientMessageID: "msg_other",
+          opencodeClientOriginalText: "stale original text",
+        },
+      }),
+    ]);
+
+    expect(result.map((message) => message.text)).toEqual([
+      external,
+      "legacy text with no metadata",
+      "edited message content",
+    ]);
+  });
+
   it("includes image-only pending entries from clients without this app's metadata", () => {
     const result = buildInboxUserMessages([pending("msg_external", "", {
       files: [{ mime: "image/png", data: "iVBORw0KGgo=", name: "clipboard.png" }],
@@ -63,6 +99,33 @@ describe("inbox message views and reconciliation", () => {
     const delivered = vm({ kind: "user", id: "msg_external", text: "from another client" });
     const merged = mergeMessageSnapshots([inbox], [delivered]);
     expect(merged).toEqual([delivered]);
+  });
+
+  it("keeps the original web text when enriched delivered history replaces the optimistic bubble", () => {
+    const original = "Summarize the attached content without losing this sentence.";
+    const expanded = `${original}\n\n[web prompt context that is not user-authored]`;
+    const messageID = "msg_web-history";
+    const metadata = {
+      opencodeClientMessageID: messageID,
+      opencodeClientOriginalText: original,
+    };
+    const optimistic = vm({
+      kind: "user",
+      id: messageID,
+      clientMessageID: messageID,
+      text: original,
+    });
+    const delivered = vm({
+      kind: "user",
+      id: messageID,
+      clientMessageID: messageID,
+      text: resolveClientMessageText(expanded, metadata, messageID),
+    });
+
+    const merged = mergeMessageSnapshots([optimistic], [delivered]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.text).toBe(original);
+    expect(merged[0]?.text).not.toContain("web prompt context");
   });
 
   it("does not prune old pending entries when inbox reconciliation fails", () => {

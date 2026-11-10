@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/runtime-env.node-test.mjs && bash scripts/deploy.test.sh",
     "check": "sh scripts/check.sh",
     "prepare": "husky"
   },

@@ -1,0 +1,21 @@
+[Unit]
+Description=opencode-client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/opencode-client-runtime
+ExecStartPre=/usr/bin/node %h/opencode-client-runtime/scripts/runtime-env.mjs verify %h/opencode-client/.env.production.local %h/opencode-client-runtime/.runtime-env.sha256
+ExecStart=/usr/bin/node %h/opencode-client-runtime/scripts/runtime-env.mjs start %h/opencode-client/.env.production.local %h/opencode-client-runtime/.runtime-env.sha256 %h/opencode-client-runtime 127.0.0.1 5115
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+UnsetEnvironment=NODE_OPTIONS
+ReadWritePaths=%h/opencode-client-runtime/.next
+
+[Install]
+WantedBy=default.target

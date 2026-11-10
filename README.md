@@ -68,16 +68,15 @@ the configured OpenCode or OIDC services. GitHub Actions are not used.
 
 ## Self-hosted production deployment
 
-The included scripts target a Linux host with a **systemd user service** already configured to run this checkout. The service should use the same project directory, read `.env.production.local`, listen on loopback, and have a reverse proxy provide HTTPS. Keep proxy response buffering disabled for the `/api/events` Server-Sent Events route.
+The included deployment runner targets a Linux host with a **systemd user service** configured from `deploy/opencode-client.service`. The trusted Git checkout and its `.env.production.local` remain separate from the active runtime directory. A shared runtime-environment loader parses the external configuration for both build and service processes, ignoring inherited systemd-manager environment values; the service listens on loopback behind an HTTPS reverse proxy. Keep proxy response buffering disabled for the `/api/events` Server-Sent Events route.
 
 ### Initial setup
 
-1. Clone the repository to the account that will run the service and install dependencies:
+1. Clone the repository to the account that will run the service. Ensure the pinned pnpm version is available; deployment installs dependencies in its temporary runtime stage, not in this trusted checkout:
 
    ```sh
    git clone https://github.com/BR4SK1/opencode-client.git "$HOME/opencode-client"
    cd "$HOME/opencode-client"
-   pnpm install --frozen-lockfile
    ```
 
 2. Create the production environment file, fill in the required OIDC and OpenCode values, and restrict its permissions:
@@ -88,63 +87,65 @@ The included scripts target a Linux host with a **systemd user service** already
    $EDITOR .env.production.local
    ```
 
-3. Create `~/.config/systemd/user/opencode-client.service` (replace the example checkout path if needed):
-
-   ```ini
-   [Unit]
-   Description=opencode-client
-   After=network-online.target
-   Wants=network-online.target
-
-   [Service]
-   Type=simple
-   WorkingDirectory=%h/opencode-client
-   Environment=NODE_ENV=production
-   EnvironmentFile=%h/opencode-client/.env.production.local
-   ExecStart=/usr/bin/node %h/opencode-client/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 3000
-   Restart=on-failure
-   RestartSec=5
-   NoNewPrivileges=true
-   ProtectSystem=strict
-   PrivateTmp=true
-   ReadWritePaths=%h/opencode-client/.next
-
-   [Install]
-   WantedBy=default.target
-   ```
-
-4. Build and start the initial deployment:
+3. Install `deploy/opencode-client.service` as `~/.config/systemd/user/opencode-client.service`. The default absolute configuration path is `$HOME/opencode-client/.env.production.local`; if it differs, change both environment-file path arguments in the unit's `ExecStartPre` and `ExecStart` to the same absolute path, and pass that path as `ENV_FILE`. The unit passes it to the shared runtime loader and does not use systemd `EnvironmentFile` parsing.
 
    ```sh
-   pnpm build
+   mkdir -p "$HOME/.config/systemd/user"
+   cp deploy/opencode-client.service "$HOME/.config/systemd/user/opencode-client.service"
    systemctl --user daemon-reload
-   systemctl --user enable --now opencode-client.service
    ```
 
-   Configure the reverse proxy to forward HTTPS traffic to `http://127.0.0.1:3000`.
+4. Enable the service without starting it, then let the trusted deployment runner build and install the first runtime:
+
+   ```sh
+   systemctl --user enable opencode-client.service
+   SERVICE_PORT=5115 \
+   HEALTHCHECK_URL=http://127.0.0.1:5115/signin \
+   ./scripts/deploy.sh
+   ```
+
+   Configure the reverse proxy to forward HTTPS traffic to `http://127.0.0.1:5115`.
+
+### Migrating an existing checkout-based service
+
+The deployment runner refuses to build or promote until systemd has loaded the runtime-based unit: it queries typed D-Bus properties for the loaded unit and verifies the exact executable/argument vectors, `ignore_errors=no`, `Type=simple`, `Restart=on-failure`, `KillMode=control-group`, empty auxiliary lifecycle commands, working directory, absence of systemd `Environment`/`EnvironmentFiles` overrides, and `UnsetEnvironment=NODE_OPTIONS`. For a future maintenance migration, install the template above with the intended absolute `ENV_FILE` path and run `systemctl --user daemon-reload`. This does not move or restart the currently running checkout-based process. Then run the current trusted deployment runner with `SOURCE_REVISION` set to the chosen application commit; it will build staging first, stop the old process, install the single runtime directory, and start the service under the new unit. Do not check out the old application commit to obtain its deployment script. This repository change does not install the unit, reload systemd, or migrate the live service.
+
+The runner does not remove the former checkout's `.next` or `node_modules`. After a separately authorized migration and only after verifying that the loaded unit and running processes no longer reference the checkout, inspect those paths and their ownership (for example with `systemctl --user show`, `ps`, `stat`, and `git status`) before deciding what to do. `.next` may be obsolete service output, but remove it only after confirming it is owned by the service account and not in use. Do not automatically or blanket-delete `node_modules`: it may be a developer dependency installation. Preserve it unless a separately authorized, ownership-checked cleanup establishes that it is deployment-only and unused.
 
 ### Subsequent deployments
 
-Deployments are manual only. After committing and pushing the changes you want
-to deploy, explicitly run the common deploy entrypoint from a clean checkout.
-It builds and checks the commit in an isolated Git worktree while the current
-service remains online, promotes the new dependencies and build, restarts the
-service, and verifies the sign-in page. If the new service fails its health
-check, the script restores the previous build automatically.
+Deployments are manual only. Keep this trusted deployment checkout on the current deployment branch, with a clean Git worktree, and select application source independently with `SOURCE_REVISION` (defaults to this checkout's `HEAD`). The trusted runner archives that Git revision into a temporary staging directory, installs dependencies and builds there, then promotes the complete runtime tree—including source/configuration, `public`, `.next`, and `node_modules`—to the single active path `$HOME/opencode-client-runtime`. It does not create a Git worktree or execute the selected revision's `scripts/deploy.sh`; recovery can therefore rebuild older application source without running an obsolete runner.
+
+The production environment file stays outside the active runtime and is never copied into staging. The trusted runner and runtime share `scripts/runtime-env.mjs`: it parses the file under a documented, line-based contract, then supplies those exact values to the Next.js build and service child process. The Next.js build and service child receive a clean environment containing only the parsed application values plus controlled `HOME`, `PATH`, and `NODE_ENV=production`; inherited shell or systemd-manager variables cannot override the application configuration. Dependency installation and lint tools use the same controlled base without application secrets. The unit also removes inherited `NODE_OPTIONS` before Node.js itself starts. The runtime retains only the SHA-256 digest, and `ExecStartPre` plus the start wrapper verify the external file against it before running. A changed environment file therefore requires a rebuild/redeploy before service startup; values themselves are never printed or stored in the runtime.
+
+The environment contract accepts UTF-8 assignments of the form `KEY=value`, blank lines, and whole-line comments beginning with `#` or `;`. Keys are unique and use shell-style identifier characters. Values may be unquoted (trimmed at the ends) or surrounded by one matching pair of single or double quotes. Spaces within values, `#`, `$`, and `=` are literal; quoting does not enable escaping. There is no variable expansion, multiline quoting, escaped-quote, or inline-comment syntax. `HOME`, `PATH`, `NODE_ENV`, and `NODE_OPTIONS` are deployment-controlled and may not appear in the file. To keep build-time application values under one source, selected Git revisions containing Next.js dotenv inputs (`.env`, `.env.local`, `.env.production`, or `.env.production.local`) are rejected; `.env.example` is not loaded by Next.js.
+
+Before any build or runtime change, the runner reads structured systemd D-Bus properties and requires the exact command vectors and failure policy from the template, with empty systemd `Environment` and `EnvironmentFiles`. This avoids relying on human-rendered `systemctl show` substrings and prevents an `ignore_errors=yes` pre-start check from passing. A single lock at `$HOME/.opencode-client-deploy.lock` serializes all trusted checkouts targeting this account's runtime and user service. Preflight requires `busctl --json=short` support and fails closed if typed D-Bus properties cannot be read. The current checkout-based unit is rejected; install and `daemon-reload` the provided unit template as an explicit operational migration before deploying. The runner never edits the unit or invokes `daemon-reload`. If the service is active, it stops it and verifies systemd reports it inactive before replacing the runtime. If it is already inactive, recovery can proceed even if the active runtime is absent or incomplete. Promotion removes the old active directory and moves in the completed stage; no prior runtime, snapshot, or release directory is retained. Stop failure aborts before changing runtime files. Promotion/start/health failures do not restore copied files; the runner reports the observed service state and warns if inactivity cannot be confirmed.
+
+This host serves the application on loopback port **5115**. The deployment runner defaults to `SERVICE_PORT=5115` and `HEALTHCHECK_URL=http://127.0.0.1:5115/signin`; it requires the health URL to target `127.0.0.1` at the configured service port, preventing a healthy unrelated listener on another host or port from passing the check. If the service port changes, configure both values consistently.
 
 ```sh
 cd "$HOME/opencode-client"
 SERVICE_NAME=opencode-client.service \
-HEALTHCHECK_URL=http://127.0.0.1:3000/signin \
+SERVICE_PORT=5115 \
+HEALTHCHECK_URL=http://127.0.0.1:5115/signin \
 ./scripts/deploy.sh
 ```
 
-`ENV_FILE` defaults to `.env.production.local`; `SERVICE_NAME`, `HEALTHCHECK_URL`, and `HEALTH_TIMEOUT_SECONDS` can be overridden for the host. Successful deployments retain the previous `node_modules` and `.next` under `.deploy/rollbacks/`. To restore a retained deployment:
+`ENV_FILE` defaults to the trusted checkout's absolute `.env.production.local` path and must follow the shared parsing contract above; the systemd unit does not read it as an `EnvironmentFile`. `RUNTIME_DIR` defaults to `$HOME/opencode-client-runtime` and must remain a direct child of the service user's home, separate from the checkout. `SERVICE_NAME`, `SERVICE_PORT`, `HEALTHCHECK_URL`, and `HEALTH_TIMEOUT_SECONDS` can also be overridden, with the loaded unit required to match. Successful deployments print the full deployed Git revision but do not keep an earlier runtime or record deployment history. Record the last known-good revision before replacing a healthy deployment.
+
+To recover after a failed or unwanted deployment, keep the current trusted deployment runner checked out and clean, update it from the deployment branch, then select the known-good **application source** revision with `SOURCE_REVISION`. Do not switch the checkout to the old application revision to run its deploy script:
 
 ```sh
+cd "$HOME/opencode-client"
+git status --short                 # resolve changes before updating the trusted runner
+git switch main
+git pull --ff-only
 SERVICE_NAME=opencode-client.service \
-HEALTHCHECK_URL=http://127.0.0.1:3000/signin \
-./scripts/rollback.sh <rollback-id>
+SERVICE_PORT=5115 \
+HEALTHCHECK_URL=http://127.0.0.1:5115/signin \
+SOURCE_REVISION=<known-good-revision> \
+./scripts/deploy.sh
 ```
 
-The rollback ID is printed after each successful deployment. Both deployment scripts require a clean Git worktree and must run as the systemd service user, not as root.
+The script builds the selected revision and health-checks port 5115; no saved build snapshot or old revision's deploy runner is used. If you do not know which revision was last healthy, consult deployment records or identify one from Git history before proceeding; the script cannot infer it from retained artifacts. `scripts/deploy.sh` requires a clean Git worktree and must run as the systemd service user, not as root.
