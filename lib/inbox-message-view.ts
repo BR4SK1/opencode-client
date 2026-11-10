@@ -1,4 +1,5 @@
 import { mapHistoryImageFiles } from "./prompt-images";
+import { resolveClientMessageText } from "./client-message-text";
 
 export interface InboxUserMessageVM {
   kind: "user";
@@ -29,11 +30,11 @@ export function buildInboxUserMessages(value: unknown): InboxUserMessageVM[] {
     const payload = record(item.payload);
     const id = string(item.id);
     if (!id) continue;
-    const text = string(payload.text);
+    const metadata = record(payload.metadata);
+    const text = resolveClientMessageText(payload.text, metadata, id);
     const mapped = mapHistoryImageFiles(payload.files, id);
     const files = Array.isArray(payload.files) ? payload.files : [];
     if (!text.trim() && mapped.images.length === 0 && mapped.omittedCount === 0 && files.length === 0) continue;
-    const metadata = record(payload.metadata);
     const created = Number(record(item.time).created) || Number(item.created) || undefined;
     const unsupportedFileCount = Math.max(0, files.length - mapped.images.length - mapped.omittedCount);
     const warnings = [

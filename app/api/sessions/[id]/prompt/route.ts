@@ -3,6 +3,10 @@ import { opencode } from "@/lib/opencode";
 import { getSessionLocation, resolvePromptFiles } from "@/lib/session-mentions";
 import { validatePromptMentions } from "@/lib/prompt-mentions";
 import { WEB_PROMPT_SKILL_ID } from "@/lib/web-prompt-skill";
+import {
+  CLIENT_MESSAGE_ID_METADATA_KEY,
+  CLIENT_MESSAGE_ORIGINAL_TEXT_METADATA_KEY,
+} from "@/lib/client-message-text";
 import { readBoundedRequestText, RequestBodyTooLargeError } from "@/lib/bounded-request";
 import {
   MAX_PROMPT_REQUEST_BYTES,
@@ -79,7 +83,8 @@ export async function POST(
       ...(body.clientMessageID
         ? {
             metadata: {
-              opencodeClientMessageID: body.clientMessageID as string,
+              [CLIENT_MESSAGE_ID_METADATA_KEY]: body.clientMessageID as string,
+              [CLIENT_MESSAGE_ORIGINAL_TEXT_METADATA_KEY]: parsed.text,
             },
           }
         : {}),

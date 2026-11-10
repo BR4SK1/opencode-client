@@ -24,6 +24,7 @@ import {
   reconcileMessageSnapshot,
   sortMessageSnapshot,
 } from "@/lib/inbox-message-view";
+import { resolveClientMessageText } from "@/lib/client-message-text";
 import {
   createAgentDefaultCoordinator,
   DEFAULT_AGENT_ID,
@@ -251,10 +252,11 @@ function buildVMs(data: unknown): MessageVM[] {
     const time = created || undefined;
     if (m.type === "user" && typeof m.text === "string") {
       const metadata = asRecord(m.metadata);
+      const id = str(m.id) || `user-${i}`;
       out.push({
         kind: "user",
-        id: str(m.id) || `user-${i}`,
-        text: m.text,
+        id,
+        text: resolveClientMessageText(m.text, metadata, id),
         time,
         clientMessageID: str(metadata.opencodeClientMessageID) || undefined,
         ...imageVMs(m.files, str(m.id)),

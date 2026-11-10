@@ -67,7 +67,10 @@ describe("prompt route mention payload", () => {
       text: "Read @src/main",
       skills: [{ id: WEB_PROMPT_SKILL_ID }],
       files: [{ uri: "file:///project/src/main.ts", name: "main.ts", mention: { start: 5, end: 14, text: "@src/main" } }],
-      metadata: { opencodeClientMessageID: "msg_12345678-1234-1234-1234-123456789abc" },
+      metadata: {
+        opencodeClientMessageID: "msg_12345678-1234-1234-1234-123456789abc",
+        opencodeClientOriginalText: "Read @src/main",
+      },
     });
   });
 
@@ -106,6 +109,36 @@ describe("prompt route mention payload", () => {
       files: [resolvedFile],
     });
     expect(mocks.prompt.mock.calls[0]?.[0]).not.toHaveProperty("metadata");
+  });
+
+  it("keeps original authored text in sideband metadata without altering model input or attaching skill text", async () => {
+    const text = "Please review this exact request: 😀\\nkeep the user's wording intact.";
+    const clientMessageID = "msg_abcdef12-3456-7890-abcd-ef1234567890";
+    const response = await POST(
+      new Request("http://localhost/api/sessions/session-1/prompt", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, clientMessageID }),
+      }),
+      { params },
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.prompt).toHaveBeenCalledWith({
+      sessionID: "session-1",
+      id: clientMessageID,
+      text,
+      skills: [{ id: WEB_PROMPT_SKILL_ID }],
+      files: [{ uri: "file:///project/src/main.ts", name: "main.ts", mention: { start: 5, end: 14, text: "@src/main" } }],
+      metadata: {
+        opencodeClientMessageID: clientMessageID,
+        opencodeClientOriginalText: text,
+      },
+    });
+    const prompt = mocks.prompt.mock.calls[0]?.[0];
+    expect(prompt.text).toBe(text);
+    expect(prompt.metadata.opencodeClientOriginalText).toBe(text);
+    expect(JSON.stringify(prompt.skills)).not.toContain(text);
   });
 
   it("rejects invalid prompt text and client message IDs before sending", async () => {
@@ -161,7 +194,10 @@ describe("prompt route mention payload", () => {
         mention: { start: 4, end: 12, text: "[image1]" },
       }],
       id: "msg_abcdef12-3456-7890-abcd-ef1234567890",
-      metadata: { opencodeClientMessageID: "msg_abcdef12-3456-7890-abcd-ef1234567890" },
+      metadata: {
+        opencodeClientMessageID: "msg_abcdef12-3456-7890-abcd-ef1234567890",
+        opencodeClientOriginalText: "A😀 [image1]",
+      },
     });
   });
 
