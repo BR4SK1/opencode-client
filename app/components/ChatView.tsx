@@ -8,6 +8,7 @@ import ExpandMore from "@mui/icons-material/ExpandMore";
 import MenuIcon from "@mui/icons-material/Menu";
 import Refresh from "@mui/icons-material/Refresh";
 import Send from "@mui/icons-material/Send";
+import StopCircle from "@mui/icons-material/StopCircle";
 import AddPhotoAlternateOutlined from "@mui/icons-material/AddPhotoAlternateOutlined";
 import SmartToy from "@mui/icons-material/SmartToy";
 import InsertDriveFileOutlined from "@mui/icons-material/InsertDriveFileOutlined";
@@ -384,6 +385,8 @@ interface ChatViewProps {
   onLoadOlder: () => Promise<boolean>;
   onBack?: () => void;
   onRefresh: () => void;
+  onStop: () => void;
+  stopping: boolean;
   onOpenSession?: (id: string) => void;
   /**
    * In-flow notification stack rendered just above the composer so notices
@@ -425,6 +428,8 @@ export default function ChatView({
   onLoadOlder,
   onBack,
   onRefresh,
+  onStop,
+  stopping,
   onOpenSession,
   notificationArea,
   notificationCount,
@@ -965,6 +970,16 @@ export default function ChatView({
               </Select>
             </FormControl>
           </Box>
+          <IconButton
+            aria-label="Stop or clean up current session"
+            title="Interrupt this session or inspect its running shells"
+            size="large"
+            disabled={stopping}
+            onClick={onStop}
+            sx={{ minWidth: 48, minHeight: 48, color: "error.main" }}
+          >
+            {stopping ? <CircularProgress size={20} /> : <StopCircle />}
+          </IconButton>
           <Box sx={{ display: { xs: "none", md: "flex" }, alignItems: "center" }}>
             <ThemeSelector />
             <IconButton

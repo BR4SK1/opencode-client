@@ -3,6 +3,7 @@
 import Add from "@mui/icons-material/Add";
 import Logout from "@mui/icons-material/Logout";
 import ExpandMore from "@mui/icons-material/ExpandMore";
+import StopCircle from "@mui/icons-material/StopCircle";
 import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import {
   AppBar,
@@ -87,6 +88,7 @@ interface SessionListProps {
   pendingCounts: Map<string, number>;
   activeId?: string;
   onOpen: (id: string) => void;
+  onStop: (id: string, title: string) => void;
   onNew: () => void;
   onLogout: () => void;
   /**
@@ -97,6 +99,89 @@ interface SessionListProps {
   notificationArea?: ReactNode;
 }
 
+interface SubagentSessionRowProps {
+  session: SessionVM;
+  status?: SessionListStatus;
+  pendingCount: number;
+  active: boolean;
+  onOpen: (id: string) => void;
+  onStop: (id: string, title: string) => void;
+}
+
+export function SubagentSessionRow({
+  session,
+  status,
+  pendingCount,
+  active,
+  onOpen,
+  onStop,
+}: SubagentSessionRowProps) {
+  const title = session.title || "Untitled";
+  const statusLabel = status === "running"
+    ? "Processing"
+    : status === "waiting"
+      ? "Needs input"
+      : undefined;
+
+  return (
+    <Box component="li" sx={{ display: "flex", alignItems: "stretch", minWidth: 0 }}>
+      <ListItemButton
+        onClick={() => onOpen(session.id)}
+        selected={active}
+        aria-label={`${title}${statusLabel ? ` — ${statusLabel}` : ""}`}
+        title={statusLabel ? `${title} — ${statusLabel}` : title}
+        sx={[
+          { minHeight: 44, pl: 5, flex: 1, minWidth: 0 },
+          ...(status ? [statusRowSx(status)] : []),
+        ]}
+      >
+        <ListItemText
+          primary={
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+              <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>
+                {title}
+              </Typography>
+              {pendingCount > 0 && (
+                <Badge
+                  color="warning"
+                  badgeContent={pendingCount}
+                  sx={{
+                    flexShrink: 0,
+                    "& .MuiBadge-badge": { position: "static", transform: "none" },
+                  }}
+                />
+              )}
+            </Box>
+          }
+          secondary={
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              <Typography variant="caption" color="text.secondary">
+                {relativeTime(session.updated)}
+              </Typography>
+              {statusLabel && status && (
+                <Typography variant="caption" sx={statusCaptionSx(status)}>
+                  {statusLabel}
+                </Typography>
+              )}
+            </Box>
+          }
+        />
+      </ListItemButton>
+      <IconButton
+        aria-label={`Stop or clean up subagent session: ${title}`}
+        title={`Stop or clean up ${title}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onStop(session.id, title);
+        }}
+        sx={{ minWidth: 48, minHeight: 48, color: "error.main", flexShrink: 0 }}
+      >
+        <StopCircle />
+      </IconButton>
+    </Box>
+  );
+}
+
 export default function SessionList({
   variant,
   sessions,
@@ -104,6 +189,7 @@ export default function SessionList({
   pendingCounts,
   activeId,
   onOpen,
+  onStop,
   onNew,
   onLogout,
   notificationArea,
@@ -331,79 +417,17 @@ export default function SessionList({
                       component="li"
                     >
                       <List disablePadding>
-                        {children.map((c) => {
-                          const childBadgeCount = pendingCounts.get(c.id) ?? 0;
-                          const childStatus = sessionStatuses.get(c.id);
-                          const childStatusLabel =
-                            childStatus === "running"
-                              ? "Processing"
-                              : childStatus === "waiting"
-                                ? "Needs input"
-                                : undefined;
-                          return (
-                            <ListItemButton
-                              key={c.id}
-                              onClick={() => onOpen(c.id)}
-                              selected={c.id === activeId}
-                              aria-label={`${c.title || "Untitled"}${childStatusLabel ? ` — ${childStatusLabel}` : ""}`}
-                              title={
-                                childStatusLabel
-                                  ? `${c.title || "Untitled"} — ${childStatusLabel}`
-                                  : c.title || "Untitled"
-                              }
-                              sx={[{ minHeight: 44, pl: 5 }, ...(childStatus ? [statusRowSx(childStatus)] : [])]}
-                            >
-                              <ListItemText
-                                primary={
-                                  <Box
-                                    sx={{
-                                      display: "flex",
-                                      alignItems: "center",
-                                      gap: 1,
-                                      minWidth: 0,
-                                    }}
-                                  >
-                                    <Typography
-                                      variant="body2"
-                                      noWrap
-                                      sx={{ flex: 1, minWidth: 0 }}
-                                    >
-                                      {c.title || "Untitled"}
-                                    </Typography>
-                                    {childBadgeCount > 0 && (
-                                      <Badge
-                                        color="warning"
-                                        badgeContent={childBadgeCount}
-                                        sx={{
-                                          flexShrink: 0,
-                                          "& .MuiBadge-badge": {
-                                            position: "static",
-                                            transform: "none",
-                                          },
-                                        }}
-                                      />
-                                    )}
-                                  </Box>
-                                }
-                                secondary={
-                                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-                                    <Typography variant="caption" color="text.secondary">
-                                      {relativeTime(c.updated)}
-                                    </Typography>
-                                    {childStatusLabel && childStatus && (
-                                      <Typography
-                                        variant="caption"
-                                        sx={statusCaptionSx(childStatus)}
-                                      >
-                                        {childStatusLabel}
-                                      </Typography>
-                                    )}
-                                  </Box>
-                                }
-                              />
-                            </ListItemButton>
-                          );
-                        })}
+                        {children.map((child) => (
+                          <SubagentSessionRow
+                            key={child.id}
+                            session={child}
+                            status={sessionStatuses.get(child.id)}
+                            pendingCount={pendingCounts.get(child.id) ?? 0}
+                            active={child.id === activeId}
+                            onOpen={onOpen}
+                            onStop={onStop}
+                          />
+                        ))}
                       </List>
                     </Collapse>
                   </>

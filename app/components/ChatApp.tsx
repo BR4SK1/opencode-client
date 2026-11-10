@@ -3,7 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  Alert,
   Box,
+  Button,
+  Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
   Stack,
   Typography,
   useMediaQuery,
@@ -25,6 +33,7 @@ import {
   sortMessageSnapshot,
 } from "@/lib/inbox-message-view";
 import { resolveClientMessageText } from "@/lib/client-message-text";
+import { stopFailureNotice, type StopFailureStage } from "@/lib/stop-error";
 import {
   createAgentDefaultCoordinator,
   DEFAULT_AGENT_ID,
@@ -77,6 +86,34 @@ export interface SessionVM {
 }
 
 export type SessionListStatus = "running" | "waiting";
+
+interface StopShellVM {
+  id: string;
+  command: string;
+  cwd: string;
+}
+
+interface StopResultVM {
+  interrupt: "interrupted" | "not-running" | "failed";
+  interruptError?: string;
+  removedShells: string[];
+  failedShells: Array<{ id: string; error: string }>;
+  unverifiedShellIDs: string[];
+  shellDiscovery: "verified" | "unavailable";
+  parentState: "unknown";
+  note: string;
+}
+
+interface StopDialogVM {
+  sessionID: string;
+  title: string;
+  shells: StopShellVM[];
+  selectedShellIDs: string[];
+  shellDiscovery: "loading" | "verified" | "unavailable";
+  busy: boolean;
+  result?: StopResultVM;
+  error?: { stage: StopFailureStage; message: string };
+}
 
 interface AgentOptionVM {
   id: string;
@@ -369,6 +406,7 @@ export default function ChatApp() {
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionLost, setConnectionLost] = useState(false);
+  const [stopDialog, setStopDialog] = useState<StopDialogVM | null>(null);
 
   const activeIdRef = useRef<string | null>(null);
   const sendingSessionIDsRef = useRef(new Set<string>());
@@ -474,6 +512,54 @@ export default function ChatApp() {
       /* unauthorized already routed to /signin */
     }
   }, [apiFetch]);
+
+  const prepareStop = useCallback(
+    async (sessionID: string, title: string) => {
+      setStopDialog({
+        sessionID,
+        title,
+        shells: [],
+        selectedShellIDs: [],
+        shellDiscovery: "loading",
+        busy: false,
+      });
+      try {
+        const response = await apiFetch(`/api/sessions/${encodeURIComponent(sessionID)}/stop`);
+        const body = asRecord(await response.json());
+        if (!response.ok) throw new Error(str(body.error) || "Could not inspect this session.");
+        const shells = Array.isArray(body.shells)
+          ? body.shells.flatMap((value) => {
+              const shell = asRecord(value);
+              const id = str(shell.id);
+              return id
+                ? [{ id, command: str(shell.command), cwd: str(shell.cwd) }]
+                : [];
+            })
+          : [];
+        setStopDialog((current) => current?.sessionID === sessionID
+          ? {
+              ...current,
+              shells,
+              shellDiscovery: body.shellDiscovery === "verified" ? "verified" : "unavailable",
+            }
+          : current,
+        );
+      } catch (error) {
+        setStopDialog((current) => current?.sessionID === sessionID
+          ? {
+              ...current,
+              shellDiscovery: "unavailable",
+              error: {
+                stage: "preview",
+                message: error instanceof Error ? error.message : "Could not inspect this session.",
+              },
+            }
+          : current,
+        );
+      }
+    },
+    [apiFetch],
+  );
 
   const applyAgentState = useCallback((id: string, value: unknown) => {
     const state = asRecord(value);
@@ -780,6 +866,65 @@ export default function ChatApp() {
       return false;
     }
   }, [fetchMessagePage, setMessageCursor]);
+
+  const stopSession = useCallback(async () => {
+    const target = stopDialog;
+    if (!target || target.busy) return;
+    setStopDialog((current) => current?.sessionID === target.sessionID
+      ? { ...current, busy: true, error: undefined }
+      : current,
+    );
+    try {
+      const response = await apiFetch(`/api/sessions/${encodeURIComponent(target.sessionID)}/stop`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ removeShellIDs: target.selectedShellIDs }),
+      });
+      const body = asRecord(await response.json());
+      if (!response.ok) throw new Error(str(body.error) || "Stop request failed.");
+      const result: StopResultVM = {
+        interrupt: body.interrupt === "interrupted" || body.interrupt === "not-running"
+          ? body.interrupt
+          : "failed",
+        interruptError: str(body.interruptError) || undefined,
+        removedShells: Array.isArray(body.removedShells)
+          ? body.removedShells.filter((value): value is string => typeof value === "string")
+          : [],
+        failedShells: Array.isArray(body.failedShells)
+          ? body.failedShells.flatMap((value) => {
+              const item = asRecord(value);
+              return str(item.id)
+                ? [{ id: str(item.id), error: str(item.error) || "Removal failed" }]
+                : [];
+            })
+          : [],
+        unverifiedShellIDs: Array.isArray(body.unverifiedShellIDs)
+          ? body.unverifiedShellIDs.filter((value): value is string => typeof value === "string")
+          : [],
+        shellDiscovery: body.shellDiscovery === "verified" ? "verified" : "unavailable",
+        parentState: "unknown",
+        note: str(body.note) || "Parent state is unknown.",
+      };
+      setStopDialog((current) => current?.sessionID === target.sessionID
+        ? { ...current, busy: false, result }
+        : current,
+      );
+      void reconcileSessionActivity();
+      void refetchMessages();
+    } catch (error) {
+      setStopDialog((current) => current?.sessionID === target.sessionID
+        ? {
+            ...current,
+            busy: false,
+            error: {
+              stage: "execution",
+              message: error instanceof Error ? error.message : "Stop request failed.",
+            },
+          }
+        : current,
+      );
+    }
+  }, [apiFetch, refetchMessages, reconcileSessionActivity, stopDialog]);
 
   const loadOlderMessages = useCallback(async () => {
     const id = activeIdRef.current;
@@ -1673,6 +1818,7 @@ export default function ChatApp() {
             pendingCounts={pendingCounts}
             activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
+            onStop={(id, title) => void prepareStop(id, title)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
           />
@@ -1688,6 +1834,7 @@ export default function ChatApp() {
             pendingCounts={pendingCounts}
             activeId={activeId ?? undefined}
             onOpen={(id) => void openSession(id)}
+            onStop={(id, title) => void prepareStop(id, title)}
             onNew={() => void newChat()}
             onLogout={() => void signOut({ redirectTo: "/signin" })}
             notificationArea={notificationArea}
@@ -1729,6 +1876,8 @@ export default function ChatApp() {
               void resyncPendingForms();
               void resyncPendingQuestions();
             }}
+            onStop={() => void prepareStop(activeId, activeSession?.title || "Untitled")}
+            stopping={stopDialog?.sessionID === activeId && stopDialog.busy}
             onLoadOlder={loadOlderMessages}
             onOpenSession={openSession}
             notificationArea={notificationArea}
@@ -1765,6 +1914,128 @@ export default function ChatApp() {
         </Box>
       )}
 
+      <Dialog
+        open={Boolean(stopDialog)}
+        onClose={() => {
+          if (!stopDialog?.busy) setStopDialog(null);
+        }}
+        fullWidth
+        maxWidth="sm"
+        aria-labelledby="stop-session-title"
+      >
+        <DialogTitle id="stop-session-title">
+          {stopDialog?.result ? "Stop request outcome" : `Stop agent · ${stopDialog?.title ?? "Session"}`}
+        </DialogTitle>
+        <DialogContent dividers>
+          {stopDialog && !stopDialog.result && (
+            <Stack spacing={1.5}>
+              <Typography variant="body2">
+                Interrupt only this session. Conversation history, composer drafts, and queued prompts are preserved;
+                queued prompts are not canceled and may start later work. An interrupt request can race with work
+                already completing; it does not prove that every detached operating-system descendant has stopped.
+              </Typography>
+              {stopDialog.shellDiscovery === "loading" && (
+                <Typography role="status" variant="body2" color="text.secondary">
+                  Checking for running shells owned by this session…
+                </Typography>
+              )}
+              {stopDialog.error && (
+                <Alert severity={stopDialog.error.stage === "preview" ? "warning" : "error"}>
+                  {stopFailureNotice(stopDialog.error.stage, stopDialog.error.message)}
+                </Alert>
+              )}
+              {stopDialog.shellDiscovery === "unavailable" && !stopDialog.error && (
+                <Alert severity="warning">
+                  Shell ownership could not be verified. No shell will be removed; interrupt-only remains available.
+                </Alert>
+              )}
+              {stopDialog.shells.length > 0 && (
+                <>
+                  <Typography variant="subtitle2">Verified running shells for this session</Typography>
+                  {stopDialog.shells.map((shell) => (
+                    <FormControlLabel
+                      key={shell.id}
+                      control={(
+                        <Checkbox
+                          checked={stopDialog.selectedShellIDs.includes(shell.id)}
+                          disabled={stopDialog.busy}
+                          onChange={(event) => setStopDialog((current) => {
+                            if (!current || current.sessionID !== stopDialog.sessionID) return current;
+                            const selected = new Set(current.selectedShellIDs);
+                            if (event.target.checked) selected.add(shell.id);
+                            else selected.delete(shell.id);
+                            return { ...current, selectedShellIDs: [...selected] };
+                          })}
+                        />
+                      )}
+                      label={(
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{shell.command || shell.id}</Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                            {shell.id} · {shell.cwd}
+                          </Typography>
+                        </Box>
+                      )}
+                      sx={{ alignItems: "flex-start", ml: 0, mr: 0 }}
+                    />
+                  ))}
+                  {stopDialog.selectedShellIDs.length > 0 && (
+                    <Alert severity="warning">
+                      Removing selected shell(s) deletes their retained output. Shell removal can also wake the child
+                      while its interrupt is racing; the parent may resume or remain waiting.
+                    </Alert>
+                  )}
+                </>
+              )}
+            </Stack>
+          )}
+          {stopDialog?.result && (
+            <Stack spacing={1.25}>
+              <Alert severity={stopDialog.result.interrupt === "interrupted" ? "success" : stopDialog.result.interrupt === "not-running" ? "info" : "warning"}>
+                {stopDialog.result.interrupt === "interrupted"
+                  ? "OpenCode reported that an execution was interrupted."
+                  : stopDialog.result.interrupt === "not-running"
+                    ? "OpenCode reported no active execution when the interrupt arrived."
+                    : `The interrupt could not be confirmed${stopDialog.result.interruptError ? `: ${stopDialog.result.interruptError}` : "."}`}
+              </Alert>
+              {stopDialog.result.removedShells.length > 0 && (
+                <Typography variant="body2">Removed shell(s): {stopDialog.result.removedShells.join(", ")}. Their retained output was deleted.</Typography>
+              )}
+              {stopDialog.result.failedShells.map((shell) => (
+                <Alert key={shell.id} severity="warning">Could not remove shell {shell.id}: {shell.error}</Alert>
+              ))}
+              {stopDialog.result.unverifiedShellIDs.length > 0 && (
+                <Alert severity="info">
+                  {stopDialog.result.shellDiscovery === "verified"
+                    ? `Shell(s) not removed because they were no longer verifiably running for this session: ${stopDialog.result.unverifiedShellIDs.join(", ")}.`
+                    : `Shell(s) not removed because ownership could not be re-verified: ${stopDialog.result.unverifiedShellIDs.join(", ")}.`}
+                </Alert>
+              )}
+              {stopDialog.result.shellDiscovery === "unavailable" && stopDialog.result.unverifiedShellIDs.length === 0 && (
+                <Alert severity="warning">Shell ownership could not be re-verified; no requested shell was removed.</Alert>
+              )}
+              <Typography variant="body2" color="text.secondary">{stopDialog.result.note}</Typography>
+            </Stack>
+          )}
+        </DialogContent>
+        <DialogActions>
+          {stopDialog?.result ? (
+            <Button onClick={() => setStopDialog(null)}>Close</Button>
+          ) : (
+            <>
+              <Button disabled={stopDialog?.busy} onClick={() => setStopDialog(null)}>Cancel</Button>
+              <Button
+                color="error"
+                variant="contained"
+                disabled={!stopDialog || stopDialog.busy}
+                onClick={() => void stopSession()}
+              >
+                {stopDialog?.busy ? "Stopping…" : "Stop"}
+              </Button>
+            </>
+          )}
+        </DialogActions>
+      </Dialog>
       {activePermissions[0] && activeId && (
         <PermissionDialog
           permission={activePermissions[0]}
