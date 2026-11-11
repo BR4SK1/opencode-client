@@ -11,6 +11,12 @@ ExecStart=/usr/bin/node %h/opencode-client-runtime/scripts/runtime-env.mjs start
 Restart=on-failure
 RestartSec=5
 KillMode=control-group
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
+TimeoutStopFailureMode=terminate
+# Drain in-flight Next.js requests for at most 30 seconds, then terminate leftovers.
+TimeoutStopSec=30s
+SendSIGKILL=yes
 NoNewPrivileges=true
 ProtectSystem=strict
 PrivateTmp=true
