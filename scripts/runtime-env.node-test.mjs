@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import http from 'node:http';
+import net from 'node:net';
 import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -110,6 +112,75 @@ test('the build child receives actual shared-parser values, not inherited manage
   assert.equal(captured.path, '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
   assert.equal(result.stdout.includes(expectedValues.CONTRACT_TOKEN), false);
   assert.equal(result.stderr.includes(expectedValues.CONTRACT_TOKEN), false);
+});
+
+test('runtime start forwards SIGTERM and waits for a persistent request to drain', async (t) => {
+  const root = path.join(tempRoot, 'persistent-start');
+  const runtimeDir = path.join(root, 'opencode-client-runtime');
+  const envFile = path.join(root, 'config.env');
+  const checksumFile = path.join(runtimeDir, '.runtime-env.sha256');
+  const nextBin = path.join(runtimeDir, 'node_modules/next/dist/bin/next');
+  await mkdir(path.dirname(nextBin), { recursive: true });
+  await writeFile(envFile, fixtureEnv);
+  await writeFile(checksumFile, `${createHash('sha256').update(fixtureEnv).digest('hex')}\n`);
+  await writeFile(nextBin, `
+    const http = require('node:http');
+    const server = http.createServer((_request, response) => {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write('event: connected\\ndata: ready\\n\\n');
+    });
+    server.listen(Number(process.argv.at(-1)), '127.0.0.1');
+    process.on('SIGTERM', () => server.close(() => process.exit(0)));
+  `);
+  const probe = net.createServer();
+  await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = probe.address().port;
+  await new Promise((resolve, reject) => probe.close((error) => error ? reject(error) : resolve()));
+
+  const child = spawn(process.execPath, [
+    path.join(scriptDirectory, 'runtime-env.mjs'),
+    'start', envFile, checksumFile, runtimeDir, '127.0.0.1', String(port),
+  ], { stdio: 'ignore' });
+  const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+  const waitForExit = async (timeoutMs) => {
+    let timer;
+    try {
+      return await Promise.race([
+        exited,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`runtime child did not exit within ${timeoutMs}ms`)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let response;
+  t.after(async () => {
+    response?.destroy();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill('SIGKILL');
+      await waitForExit(1000);
+    }
+  });
+  const deadline = Date.now() + 3000;
+  while (!response && Date.now() < deadline) {
+    await new Promise((resolve) => {
+      const request = http.get(`http://127.0.0.1:${port}/events`, (incoming) => {
+        response = incoming;
+        incoming.once('data', resolve);
+      });
+      request.once('error', resolve);
+    });
+    if (!response) await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(response, 'persistent HTTP request connected to the child server');
+  child.kill('SIGTERM');
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(child.exitCode, null, 'wrapper remains alive while the persistent request is open');
+  response.destroy();
+  const result = await waitForExit(3000);
+  assert.equal(result.code, 0, `wrapper/child exited cleanly: ${JSON.stringify(result)}`);
 });
 
 test('runtime start receives the same parsed values and refuses checksum drift', async () => {

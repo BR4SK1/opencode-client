@@ -71,6 +71,11 @@ export function validateUnitData(properties, expected) {
   const serviceType = readTypedJson(properties.Type, 's', 'Type');
   const restart = readTypedJson(properties.Restart, 's', 'Restart');
   const killMode = readTypedJson(properties.KillMode, 's', 'KillMode');
+  const timeoutStopUSec = readTypedJson(properties.TimeoutStopUSec, 't', 'TimeoutStopUSec');
+  const sendSIGKILL = readTypedJson(properties.SendSIGKILL, 'b', 'SendSIGKILL');
+  const killSignal = readTypedJson(properties.KillSignal, 'i', 'KillSignal');
+  const finalKillSignal = readTypedJson(properties.FinalKillSignal, 'i', 'FinalKillSignal');
+  const timeoutStopFailureMode = readTypedJson(properties.TimeoutStopFailureMode, 's', 'TimeoutStopFailureMode');
   const environment = readTypedJson(properties.Environment, 'as', 'Environment');
   const environmentFiles = readTypedJson(properties.EnvironmentFiles, 'a(sb)', 'EnvironmentFiles');
   const unsetEnvironment = readTypedJson(properties.UnsetEnvironment, 'as', 'UnsetEnvironment');
@@ -106,6 +111,12 @@ export function validateUnitData(properties, expected) {
   }
   if (killMode !== 'control-group') {
     fail('loaded systemd KillMode must be control-group so stop terminates all runtime processes');
+  }
+  if (timeoutStopUSec !== 30_000_000) {
+    fail('loaded systemd TimeoutStopSec must be exactly 30 seconds to bound graceful shutdown');
+  }
+  if (sendSIGKILL !== true || killSignal !== 15 || finalKillSignal !== 9 || timeoutStopFailureMode !== 'terminate') {
+    fail('loaded systemd shutdown must use SIGTERM, bounded SIGKILL escalation, and TimeoutStopFailureMode=terminate');
   }
   for (const [name, commands] of auxiliaryCommands) {
     if (!Array.isArray(commands) || commands.length !== 0) {
@@ -153,6 +164,11 @@ export function inspectAndValidate(serviceName, expected) {
     Type: getProperty(objectPath, SERVICE_INTERFACE, 'Type'),
     Restart: getProperty(objectPath, SERVICE_INTERFACE, 'Restart'),
     KillMode: getProperty(objectPath, SERVICE_INTERFACE, 'KillMode'),
+    TimeoutStopUSec: getProperty(objectPath, SERVICE_INTERFACE, 'TimeoutStopUSec'),
+    SendSIGKILL: getProperty(objectPath, SERVICE_INTERFACE, 'SendSIGKILL'),
+    KillSignal: getProperty(objectPath, SERVICE_INTERFACE, 'KillSignal'),
+    FinalKillSignal: getProperty(objectPath, SERVICE_INTERFACE, 'FinalKillSignal'),
+    TimeoutStopFailureMode: getProperty(objectPath, SERVICE_INTERFACE, 'TimeoutStopFailureMode'),
     ExecCondition: getProperty(objectPath, SERVICE_INTERFACE, 'ExecCondition'),
     ExecStartPost: getProperty(objectPath, SERVICE_INTERFACE, 'ExecStartPost'),
     ExecReload: getProperty(objectPath, SERVICE_INTERFACE, 'ExecReload'),
